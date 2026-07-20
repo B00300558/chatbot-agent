@@ -49,18 +49,32 @@ const PORT = Number(process.env.PORT) || 3000;
 const CANDIDATES = Number(process.env.CANDIDATES) || 10;   // candidats recuperes pour le re-ranking
 const MAX_SOURCES = Number(process.env.MAX_SOURCES) || 3;  // articles affiches au maximum
 
+// --- Fournisseur LLM : Databricks (endpoint interne) > Gemini (gratuit) > Anthropic ---
+const DATABRICKS_URL = process.env.DATABRICKS_URL || '';       // ex: https://adb-xxxx.azuredatabricks.net/serving-endpoints/databricks-claude-sonnet-4-5/invocations
+const DATABRICKS_TOKEN = process.env.DATABRICKS_TOKEN || '';   // token d'acces Databricks (dapi...)
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const GEMINI_URL = process.env.GEMINI_URL || 'https://generativelanguage.googleapis.com/v1beta';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
-const SCORE_MIN = Number(process.env.SCORE_MIN) || 3;  // note minimale (1-5) pour afficher la reponse
 const ANTHROPIC_URL = process.env.ANTHROPIC_URL || 'https://api.anthropic.com/v1/messages';
-const RAG_ENABLED = String(process.env.RAG_ENABLED ?? 'true').toLowerCase() === 'true' && Boolean(ANTHROPIC_API_KEY);
+const SCORE_MIN = Number(process.env.SCORE_MIN) || 3;  // note minimale (1-5) pour afficher la reponse
+const SYNTH_MIN_COVERAGE = Number(process.env.SYNTH_MIN_COVERAGE) || 0.5; // mode sans IA : part minimale des mots de la question retrouves dans l'article
+const LLM_PROVIDER = (DATABRICKS_URL && DATABRICKS_TOKEN) ? 'databricks'
+  : GEMINI_API_KEY ? 'gemini'
+  : ANTHROPIC_API_KEY ? 'anthropic'
+  : null;
+const LLM_MODEL = LLM_PROVIDER === 'databricks' ? (DATABRICKS_URL.match(/serving-endpoints\/([^/]+)/)?.[1] || 'databricks-endpoint')
+  : LLM_PROVIDER === 'gemini' ? GEMINI_MODEL
+  : ANTHROPIC_MODEL;
+const RAG_ENABLED = String(process.env.RAG_ENABLED ?? 'true').toLowerCase() === 'true' && Boolean(LLM_PROVIDER);
 
 if (String(process.env.ELK_INSECURE).toLowerCase() === 'true') {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
   console.warn('[WARN] ELK_INSECURE=true : verification du certificat TLS desactivee.');
 }
 if (!ELK_API_KEY) console.warn('[WARN] ELK_API_KEY vide : renseigne ta cle Elasticsearch dans .env.');
-if (!ANTHROPIC_API_KEY) console.warn('[WARN] ANTHROPIC_API_KEY vide : bascule sur la synthese sans IA.');
+if (!LLM_PROVIDER) console.warn('[WARN] Aucune cle LLM (DATABRICKS_URL+TOKEN, GEMINI_API_KEY ou ANTHROPIC_API_KEY) : bascule sur la synthese sans IA.');
 
 // -------------------------------------------------------------
 //  Nettoyage HTML / entites
@@ -218,7 +232,7 @@ function rerank(question, candidates) {
 }
 
 // -------------------------------------------------------------
-//  RAG : Claude redige la reponse + choisit les sources pertinentes
+//  RAG : le LLM redige la reponse + choisit les sources pertinentes
 // -------------------------------------------------------------
 const SYSTEM_PROMPT = [
   "Tu es l'assistant FAQ officiel de l'ESSEC Business School qui aide les etudiants.",
@@ -291,10 +305,86 @@ async function generateAnswerWithClaude(question, articles) {
   }
 }
 
+// Gemini (Google AI Studio, palier gratuit)
+async function generateAnswerWithGemini(question, articles) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const res = await fetch(`${GEMINI_URL}/models/${GEMINI_MODEL}:generateContent`, {
+      method: 'POST',
+      headers: { 'x-goog-api-key': GEMINI_API_KEY, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: 'user', parts: [{ text: buildRagUserMessage(question, articles) }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 800, responseMimeType: 'application/json' }
+      }),
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      const err = new Error(`Gemini ${res.status}`); err.detail = detail.slice(0, 300); throw err;
+    }
+    const data = await res.json();
+    const text = (data?.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('\n').trim();
+    return parseClaudeJson(text) || { found: true, score: SCORE_MIN, answer: text, sources: null };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Databricks Model Serving (endpoint interne, format OpenAI chat completions)
+async function generateAnswerWithDatabricks(question, articles) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const res = await fetch(DATABRICKS_URL, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${DATABRICKS_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: buildRagUserMessage(question, articles) }
+        ],
+        max_tokens: 800,
+        temperature: 0.1
+      }),
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      const err = new Error(`Databricks ${res.status}`); err.detail = detail.slice(0, 300); throw err;
+    }
+    const data = await res.json();
+    let content = data?.choices?.[0]?.message?.content ?? '';
+    if (Array.isArray(content)) content = content.map((c) => c?.text || '').join('\n'); // certains endpoints renvoient des blocs
+    const text = String(content).trim();
+    return parseClaudeJson(text) || { found: true, score: SCORE_MIN, answer: text, sources: null };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Dispatcher selon le fournisseur configure
+function generateAnswer(question, articles) {
+  if (LLM_PROVIDER === 'databricks') return generateAnswerWithDatabricks(question, articles);
+  if (LLM_PROVIDER === 'gemini') return generateAnswerWithGemini(question, articles);
+  return generateAnswerWithClaude(question, articles);
+}
+
 // -------------------------------------------------------------
 //  Repli sans IA : synthese RECENTREE SUR LA QUESTION
 //  (on garde les phrases de l'article qui recoupent le plus la question)
 // -------------------------------------------------------------
+// Part des mots de la question retrouves dans l'article (titre + gras + corps).
+// Sert de garde-fou au mode sans IA : trop faible -> "Information non trouvee".
+function questionCoverage(question, article) {
+  const q = [...new Set(terms(question))];
+  if (!q.length || !article) return 0;
+  const hay = new Set([...terms(article.title), ...terms(article.bold), ...terms(article.text)]);
+  let hit = 0; for (const t of q) if (hay.has(t)) hit++;
+  return hit / q.length;
+}
+
 function synthesizeWithoutAI(question, article) {
   if (!article) return null;
   const qSet = new Set(terms(question));
@@ -349,15 +439,15 @@ async function handleAsk(body, res) {
   // 2) Reponse construite
   if (RAG_ENABLED) {
     try {
-      const out = await generateAnswerWithClaude(question, shortlist);
+      const out = await generateAnswer(question, shortlist);
       const score = Number(out.score);
       const scoreVal = Number.isFinite(score) ? score : null;
-      // Refus si Claude dit found:false OU si son auto-note est < SCORE_MIN
+      // Refus si le LLM dit found:false OU si son auto-note est < SCORE_MIN
       const found = out.found !== false && (!Number.isFinite(score) || score >= SCORE_MIN);
       if (!found) {
         return sendJson(res, 200, { question, answer: NOT_FOUND_MSG, mode: 'claude', found: false, score: scoreVal, sources: [] });
       }
-      // Sources reellement citees par Claude (dedupe, cap MAX_SOURCES)
+      // Sources reellement citees par le LLM (dedupe, cap MAX_SOURCES)
       let sources = [];
       if (Array.isArray(out.sources)) {
         const seen = new Set();
@@ -375,13 +465,17 @@ async function handleAsk(body, res) {
       }
       return sendJson(res, 200, { question, answer: out.answer || null, mode: 'claude', found: true, score: scoreVal, sources });
     } catch (err) {
-      console.error('[Claude] Erreur, bascule sur synthese sans IA :', err?.message, err?.detail || '');
-      const answer = synthesizeWithoutAI(question, shortlist[0]);
-      return sendJson(res, 200, { question, answer, mode: 'fallback', found: true, sources: shortlist.slice(0, MAX_SOURCES).map(toSource) });
+      // Echec de l'appel LLM : on ne montre JAMAIS une reponse non verifiee.
+      console.error(`[${LLM_PROVIDER}] Erreur LLM :`, err?.message, err?.detail || '');
+      return sendJson(res, 200, { question, answer: NOT_FOUND_MSG, mode: 'error', found: false, sources: [] });
     }
   }
 
-  // 3) Mode sans IA
+  // 3) Mode sans IA : extrait du meilleur article, avec garde-fou de pertinence.
+  const coverage = questionCoverage(question, shortlist[0]);
+  if (coverage < SYNTH_MIN_COVERAGE) {
+    return sendJson(res, 200, { question, answer: NOT_FOUND_MSG, mode: 'synthese', found: false, sources: [] });
+  }
   const answer = synthesizeWithoutAI(question, shortlist[0]);
   return sendJson(res, 200, { question, answer, mode: 'synthese', found: true, sources: shortlist.slice(0, MAX_SOURCES).map(toSource) });
 }
@@ -419,7 +513,7 @@ function readBody(req) {
 const server = http.createServer(async (req, res) => {
   const { pathname } = new URL(req.url, 'http://x');
   if (req.method === 'GET' && pathname === '/api/health') {
-    return sendJson(res, 200, { ok: true, elkConfigured: Boolean(ELK_API_KEY), ragEnabled: RAG_ENABLED, model: RAG_ENABLED ? ANTHROPIC_MODEL : null, maxSources: MAX_SOURCES });
+    return sendJson(res, 200, { ok: true, elkConfigured: Boolean(ELK_API_KEY), ragEnabled: RAG_ENABLED, provider: RAG_ENABLED ? LLM_PROVIDER : null, model: RAG_ENABLED ? LLM_MODEL : null, maxSources: MAX_SOURCES });
   }
   if (req.method === 'POST' && pathname === '/api/ask') {
     try { return handleAsk(await readBody(req), res); } catch { return sendJson(res, 400, { error: 'Requete invalide.' }); }
@@ -432,6 +526,6 @@ server.listen(PORT, () => {
   console.log(`\n  Assistant FAQ ESSEC demarre`);
   console.log(`  -> Interface : http://localhost:${PORT}`);
   console.log(`  -> Index ELK : ${ELK_URL}  (cle ${ELK_API_KEY ? 'OK' : 'MANQUANTE'})`);
-  console.log(`  -> RAG Claude: ${RAG_ENABLED ? `active (${ANTHROPIC_MODEL})` : 'desactive (synthese sans IA)'}`);
+  console.log(`  -> RAG LLM   : ${RAG_ENABLED ? `active (${LLM_PROVIDER} / ${LLM_MODEL})` : 'desactive (synthese sans IA)'}`);
   console.log(`  -> Sources   : ${MAX_SOURCES} maximum\n`);
 });
