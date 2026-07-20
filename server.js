@@ -50,7 +50,8 @@ const CANDIDATES = Number(process.env.CANDIDATES) || 10;   // candidats recupere
 const MAX_SOURCES = Number(process.env.MAX_SOURCES) || 3;  // articles affiches au maximum
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-latest';
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
+const SCORE_MIN = Number(process.env.SCORE_MIN) || 3;  // note minimale (1-5) pour afficher la reponse
 const ANTHROPIC_URL = process.env.ANTHROPIC_URL || 'https://api.anthropic.com/v1/messages';
 const RAG_ENABLED = String(process.env.RAG_ENABLED ?? 'true').toLowerCase() === 'true' && Boolean(ANTHROPIC_API_KEY);
 
@@ -221,29 +222,30 @@ function rerank(question, candidates) {
 // -------------------------------------------------------------
 const SYSTEM_PROMPT = [
   "Tu es l'assistant FAQ officiel de l'ESSEC Business School qui aide les etudiants.",
-  "Tu dois repondre EXCLUSIVEMENT a partir des extraits de FAQ fournis. C'est une regle absolue.",
+  "Tu reponds EXCLUSIVEMENT a partir des extraits de FAQ fournis. Aucune connaissance exterieure, aucune invention. Regle absolue.",
   "",
-  "TON RAISONNEMENT (obligatoire, avant de decider) :",
-  "- Identifie precisement CE QUE DEMANDE la question : son intention exacte (un 'comment' attend une procedure/des etapes ; un 'ou' attend un lieu/lien ; un 'quand' attend une date ; 'qui' attend un contact).",
-  "- Verifie si les extraits contiennent EXACTEMENT cette information demandee.",
+  "ETAPE 1 - INTENTION : identifie ce que demande vraiment la question (un 'comment' attend une procedure ; 'ou' un lieu/lien ; 'quand' une date ; 'qui' un contact).",
   "",
-  "REGLE DE FIDELITE (la plus importante) :",
-  "- Tu ne reponds sur le fond QUE si les extraits contiennent explicitement l'information qui repond a l'intention exacte de la question.",
-  "- Un extrait qui traite du MEME SUJET ou d'un sujet PROCHE mais qui ne repond pas precisement a ce qui est demande n'est PAS suffisant : dans ce cas tu NE reponds PAS.",
-  "  Exemple : si on demande 'COMMENT obtenir mon certificat de scolarite' et que les extraits decrivent l'organisation de la scolarite (semestres, cours...) sans expliquer la DEMARCHE pour obtenir le certificat, alors l'information n'est PAS presente -> found:false.",
-  "- En cas de doute, tu choisis found:false. Il vaut mieux dire qu'on ne sait pas que repondre a cote.",
+  "ETAPE 2 - REDACTION : redige un brouillon de reponse en francais, clair et concis (2 a 6 phrases, ou une courte liste pour une procedure), en repondant a l'intention exacte, uniquement a partir des extraits.",
   "",
-  "QUAND L'INFORMATION N'EST PAS PRESENTE :",
-  "- Mets \"found\": false, \"sources\": [], et dans \"answer\" un message court et poli : tu n'as pas trouve la reponse a cette question precise dans la FAQ, et tu invites l'etudiant a reformuler ou a contacter le service concerne. N'expose PAS de contenu tangentiel.",
+  "ETAPE 3 - RELECTURE ET SOURCAGE (obligatoire) : relis ta reponse phrase par phrase. Pour CHAQUE affirmation, verifie qu'elle est explicitement justifiee par un extrait precis. SUPPRIME toute phrase qui n'est pas directement sourcee par un extrait. Dans 'sources', mets uniquement les numeros des extraits qui justifient reellement ce qui reste, du plus au moins pertinent, 3 maximum.",
   "",
-  "QUAND L'INFORMATION EST PRESENTE :",
-  "- \"found\": true. Redige en francais, clair, chaleureux, concis (2 a 6 phrases, ou une courte liste a puces/numerotee pour une procedure). Vouvoie l'etudiant. Reponds a l'intention exacte, ne resume pas l'article en general.",
-  "- N'invente RIEN, aucune connaissance exterieure, aucune URL dans \"answer\".",
-  "- Dans \"sources\", liste les numeros des extraits REELLEMENT utilises, du plus au moins pertinent, 3 au maximum.",
+  "ETAPE 4 - AUTO-NOTE 'score' de 1 a 5 : evalue a quel point ta reponse finale repond a l'intention EXACTE de la question ET est entierement soutenue par les extraits.",
+  "  5 = repond exactement a la question, chaque element est explicitement dans les extraits.",
+  "  3 = repond correctement mais partiellement, ou avec une marge d'interpretation.",
+  "  1-2 = les extraits ne repondent pas vraiment a ce qui est demande (sujet proche mais pas la reponse), ou reponse peu soutenue.",
+  "",
+  "DECISION :",
+  "- Si score >= 3 : \"found\": true, et 'answer' = ta reponse relue et entierement sourcee.",
+  "- Si score < 3 : \"found\": false, 'sources': [], et 'answer' = un message court et poli disant que tu n'as pas trouve la reponse a cette question precise dans la FAQ et invitant a reformuler ou contacter le service concerne. N'expose AUCUN contenu tangentiel.",
+  "- En cas de doute, baisse la note et ne reponds pas. Mieux vaut dire qu'on ne sait pas que repondre a cote.",
+  "- Aucune URL dans 'answer' (les sources sont affichees a part).",
   "",
   "FORMAT DE SORTIE : reponds STRICTEMENT avec un unique objet JSON valide, sans texte avant ni apres, de la forme :",
-  '{"found": true|false, "answer": "...", "sources": [1, 2]}'
+  '{"found": true|false, "score": 1-5, "answer": "...", "sources": [1, 2]}'
 ].join('\n');
+
+const NOT_FOUND_MSG = "Je n'ai pas trouve la reponse a cette question precise dans la FAQ. Essayez de reformuler, ou contactez directement le service concerne.";
 
 function buildRagUserMessage(question, articles) {
   const extraits = articles.map((a, i) => {
@@ -283,7 +285,7 @@ async function generateAnswerWithClaude(question, articles) {
     }
     const data = await res.json();
     const text = (data?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
-    return parseClaudeJson(text) || { found: true, answer: text, sources: null };
+    return parseClaudeJson(text) || { found: true, score: SCORE_MIN, answer: text, sources: null };
   } finally {
     clearTimeout(timeout);
   }
@@ -348,21 +350,30 @@ async function handleAsk(body, res) {
   if (RAG_ENABLED) {
     try {
       const out = await generateAnswerWithClaude(question, shortlist);
-      const found = out.found !== false;
-      let sources = [];
-      if (found) {
-        if (Array.isArray(out.sources)) {
-          const seen = new Set();
-          for (const n of out.sources) {
-            const i = Number(n) - 1;
-            if (Number.isInteger(i) && i >= 0 && i < shortlist.length && !seen.has(i)) { seen.add(i); sources.push(toSource(shortlist[i])); }
-            if (sources.length >= MAX_SOURCES) break;
-          }
-        } else {
-          sources = shortlist.slice(0, MAX_SOURCES).map(toSource);
-        }
+      const score = Number(out.score);
+      const scoreVal = Number.isFinite(score) ? score : null;
+      // Refus si Claude dit found:false OU si son auto-note est < SCORE_MIN
+      const found = out.found !== false && (!Number.isFinite(score) || score >= SCORE_MIN);
+      if (!found) {
+        return sendJson(res, 200, { question, answer: NOT_FOUND_MSG, mode: 'claude', found: false, score: scoreVal, sources: [] });
       }
-      return sendJson(res, 200, { question, answer: out.answer || null, mode: 'claude', found, sources });
+      // Sources reellement citees par Claude (dedupe, cap MAX_SOURCES)
+      let sources = [];
+      if (Array.isArray(out.sources)) {
+        const seen = new Set();
+        for (const n of out.sources) {
+          const i = Number(n) - 1;
+          if (Number.isInteger(i) && i >= 0 && i < shortlist.length && !seen.has(i)) { seen.add(i); sources.push(toSource(shortlist[i])); }
+          if (sources.length >= MAX_SOURCES) break;
+        }
+      } else {
+        sources = shortlist.slice(0, MAX_SOURCES).map(toSource);
+      }
+      // Rien n'est source -> on ne montre pas de reponse
+      if (!sources.length) {
+        return sendJson(res, 200, { question, answer: NOT_FOUND_MSG, mode: 'claude', found: false, score: scoreVal, sources: [] });
+      }
+      return sendJson(res, 200, { question, answer: out.answer || null, mode: 'claude', found: true, score: scoreVal, sources });
     } catch (err) {
       console.error('[Claude] Erreur, bascule sur synthese sans IA :', err?.message, err?.detail || '');
       const answer = synthesizeWithoutAI(question, shortlist[0]);
