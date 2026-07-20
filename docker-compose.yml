@@ -1,0 +1,19 @@
+services:
+  faq:
+    build: .
+    container_name: essec-faq
+    ports:
+      - "3000:3000"
+    environment:
+      # Les cles API sont lues depuis votre fichier .env (jamais dans l'image).
+      ELK_URL: ${ELK_URL:-https://myelk.essec.fr/myessec_faq/_search}
+      ELK_API_KEY: ${ELK_API_KEY:?Definir ELK_API_KEY dans le fichier .env}
+      ELK_INSECURE: ${ELK_INSECURE:-false}
+      CANDIDATES: ${CANDIDATES:-10}
+      MAX_SOURCES: ${MAX_SOURCES:-3}
+      # RAG Claude (facultatif : si vide, bascule sur la synthese sans IA)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-3-5-haiku-latest}
+      RAG_ENABLED: ${RAG_ENABLED:-true}
+      PORT: 3000
+    restart: unless-stopped

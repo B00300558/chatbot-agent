@@ -1,0 +1,14 @@
+{
+  "name": "essec-faq-assistant",
+  "version": "1.0.0",
+  "description": "Assistant FAQ pour etudiants ESSEC, adosse a Elasticsearch (zero dependance)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
