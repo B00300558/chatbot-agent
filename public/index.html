@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Assistant FAQ — ESSEC Business School</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,300;0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      /* Charte ESSEC (digitale) */
+      --essec-blue: #1da1e0;        /* couleur principale */
+      --essec-blue-dark: #3b57a1;   /* bleu fonce secondaire */
+      --essec-blue-deep: #17537a;   /* variante foncee pour hover */
+      --ink: #14181f;               /* logo noir / texte */
+      --muted: #667085;
+      --bg: #f5f8fb;
+      --card: #ffffff;
+      --border: #e4e9f0;
+      --chip-bg: #e9f6fd;
+      --radius: 14px;
+      --shadow: 0 1px 3px rgba(16,42,67,.06), 0 10px 30px rgba(16,42,67,.06);
+      --font: 'Roboto', Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; font-family: var(--font); color: var(--ink);
+      background: var(--bg); display: flex; flex-direction: column; min-height: 100vh;
+    }
+
+    /* En-tete : fond bleu ESSEC, logo officiel blanc en haut a gauche */
+    header {
+      background: var(--essec-blue);
+      padding: 16px 24px; display: flex; align-items: center; gap: 14px;
+      position: sticky; top: 0; z-index: 10;
+      box-shadow: 0 2px 14px rgba(16,42,67,.12);
+    }
+    .brand { display: flex; align-items: center; }
+    .brand .logo { height: 52px; width: auto; display: block; }
+    .header-right { margin-left: auto; text-align: right; color: #fff; }
+    .tagline { font-size: 14px; font-weight: 700; color: #fff; letter-spacing: .3px; }
+    .subtitle { font-size: 12.5px; color: rgba(255,255,255,.85); margin-top: 2px; }
+    @media (max-width: 620px) { .header-right { display: none; } .brand .logo { height: 44px; } }
+
+    main { flex: 1; width: 100%; max-width: 840px; margin: 0 auto; padding: 24px 16px 150px; display: flex; flex-direction: column; }
+
+    /* Accueil */
+    .welcome { text-align: center; margin: 24px 0 8px; }
+    .welcome h2 { font-size: 24px; font-weight: 500; margin: 0 0 8px; }
+    .welcome p { color: var(--muted); margin: 0 auto; max-width: 540px; font-size: 15px; line-height: 1.5; }
+    .suggestions { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin: 24px 0; }
+    .chip {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 13px 15px; text-align: left; font-size: 14px; color: var(--ink);
+      cursor: pointer; transition: .15s; font-family: var(--font);
+    }
+    .chip:hover { border-color: var(--essec-blue); box-shadow: var(--shadow); transform: translateY(-1px); }
+
+    .thread { display: flex; flex-direction: column; gap: 22px; }
+
+    /* Bulle question */
+    .msg-user {
+      align-self: flex-end; background: var(--essec-blue); color: #fff;
+      padding: 11px 16px; border-radius: 16px 16px 4px 16px; max-width: 82%;
+      font-size: 15px; line-height: 1.45; box-shadow: var(--shadow);
+    }
+
+    .answer-block { align-self: stretch; }
+
+    /* Carte reponse construite */
+    .answer-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-left: 4px solid var(--essec-blue); border-radius: var(--radius);
+      box-shadow: var(--shadow); padding: 20px 24px; margin-bottom: 20px;
+    }
+    .answer-head { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
+    .answer-badge {
+      width: 26px; height: 26px; border-radius: 7px; background: var(--essec-blue);
+      display: grid; place-items: center; flex: 0 0 auto;
+    }
+    .answer-badge svg { width: 15px; height: 16px; }
+    .answer-label { font-size: 12px; font-weight: 700; color: var(--essec-blue); letter-spacing: .6px; text-transform: uppercase; }
+    .answer-card.notfound { border-left-color: #b8c0cc; }
+    .answer-card.notfound .answer-badge { background: #98a2b3; }
+    .answer-card.notfound .answer-label { color: #667085; }
+    .answer-text { font-size: 15.5px; line-height: 1.7; color: #26313f; }
+    .answer-text p { margin: 0 0 12px; } .answer-text p:last-child { margin-bottom: 0; }
+    .answer-text ul, .answer-text ol { margin: 10px 0 12px; padding-left: 4px; list-style: none; }
+    .answer-text li { position: relative; margin: 7px 0; padding-left: 24px; }
+    .answer-text ul li::before { content: ''; position: absolute; left: 6px; top: 10px; width: 6px; height: 6px; border-radius: 50%; background: var(--essec-blue); }
+    .answer-text ol { counter-reset: step; }
+    .answer-text ol li { counter-increment: step; }
+    .answer-text ol li::before { content: counter(step); position: absolute; left: 0; top: 1px; width: 19px; height: 19px; border-radius: 50%; background: var(--chip-bg); color: var(--essec-blue-deep); font-size: 11.5px; font-weight: 700; display: grid; place-items: center; }
+    .answer-text strong { color: var(--ink); font-weight: 700; }
+    .answer-text a { color: var(--essec-blue); }
+
+    /* Sources */
+    .sources-title { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .6px; text-transform: uppercase; margin: 2px 2px 12px; display: flex; align-items: center; gap: 8px; }
+    .sources-title::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .source {
+      display: block; text-decoration: none; color: inherit;
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 13px 15px; margin-bottom: 9px; transition: .15s;
+    }
+    .source:hover { border-color: var(--essec-blue); box-shadow: var(--shadow); }
+    .source-top { display: flex; align-items: baseline; gap: 8px; }
+    .source-title { font-weight: 500; font-size: 15px; color: var(--essec-blue-dark); flex: 1; }
+    .source-go { font-size: 13px; font-weight: 500; color: var(--essec-blue); white-space: nowrap; }
+    .source-excerpt { font-size: 13px; color: var(--muted); margin-top: 5px; line-height: 1.45; }
+    .source-cats { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .cat { background: var(--chip-bg); color: var(--essec-blue-deep); font-size: 11.5px; font-weight: 500; padding: 3px 9px; border-radius: 999px; }
+
+    .empty, .error-box {
+      background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 18px; font-size: 14.5px; color: var(--muted); line-height: 1.55;
+    }
+    .error-box { border-color: #f0c9c9; background: #fdf3f3; color: #b0322b; }
+
+    /* Chargement */
+    .loading { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--essec-blue); animation: bounce 1s infinite; }
+    .dot:nth-child(2) { animation-delay: .15s; } .dot:nth-child(3) { animation-delay: .3s; }
+    @keyframes bounce { 0%,80%,100%{transform:translateY(0);opacity:.4} 40%{transform:translateY(-6px);opacity:1} }
+
+    /* Barre de saisie */
+    .composer { position: fixed; bottom: 0; left: 0; right: 0; background: linear-gradient(to top, var(--bg) 72%, rgba(245,248,251,0)); padding: 14px 16px 20px; }
+    .composer-inner {
+      max-width: 840px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end;
+      background: var(--card); border: 1px solid var(--border); border-radius: 26px;
+      padding: 8px 8px 8px 18px; box-shadow: var(--shadow);
+    }
+    .composer-inner:focus-within { border-color: var(--essec-blue); }
+    textarea#q { flex: 1; border: none; outline: none; resize: none; font-size: 15px; font-family: var(--font); line-height: 1.4; max-height: 120px; padding: 9px 0; background: transparent; color: var(--ink); }
+    button#send { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; border: none; background: var(--essec-blue); color: #fff; cursor: pointer; transition: .15s; display: grid; place-items: center; }
+    button#send svg { width: 20px; height: 20px; }
+    button#send:hover { background: var(--essec-blue-deep); }
+    button#send:disabled { background: #a9d6ef; cursor: default; }
+    .hint { max-width: 840px; margin: 8px auto 0; text-align: center; font-size: 11.5px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <!-- Logo officiel ESSEC (version blanche, vectoriel) -->
+      <img class="logo" src="logo-essec.svg" alt="ESSEC Business School" />
+    </div>
+    <div class="header-right">
+      <div class="tagline">Enlighten. Lead. Change.</div>
+      <div class="subtitle">Assistant FAQ étudiants</div>
+    </div>
+  </header>
+
+  <main>
+    <section id="welcome" class="welcome">
+      <h2>Bonjour 👋</h2>
+      <p>Posez votre question sur votre scolarité, vos cours, l'administration ou la vie sur le campus : je rédige une réponse à partir de la FAQ officielle ESSEC.</p>
+      <div class="suggestions" id="suggestions">
+        <button class="chip">Comment obtenir mon certificat de scolarité ?</button>
+        <button class="chip">Quelles sont les dates de la période d'examens ?</button>
+        <button class="chip">Comment m'inscrire à un cours électif ?</button>
+        <button class="chip">Qui contacter pour un problème sur MyESSEC ?</button>
+      </div>
+    </section>
+
+    <div id="thread" class="thread"></div>
+  </main>
+
+  <div class="composer">
+    <div class="composer-inner">
+      <textarea id="q" rows="1" placeholder="Écrivez votre question…" autocomplete="off"></textarea>
+      <button id="send" title="Envoyer" aria-label="Envoyer">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M4 12h14M12 5l7 7-7 7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <div class="hint">Réponses générées à partir de la base FAQ officielle ESSEC. En cas de doute, vérifiez auprès de l'administration.</div>
+  </div>
+
+  <script>
+    const thread = document.getElementById('thread');
+    const welcome = document.getElementById('welcome');
+    const input = document.getElementById('q');
+    const sendBtn = document.getElementById('send');
+
+    input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px'; });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
+    sendBtn.addEventListener('click', submit);
+    document.getElementById('suggestions').addEventListener('click', (e) => {
+      if (e.target.classList.contains('chip')) { input.value = e.target.textContent; submit(); }
+    });
+
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+    function scrollToBottom() { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); }
+
+    function formatAnswer(text) {
+      const lines = String(text).split('\n');
+      let html = '', listType = null;
+      const inline = (s) => escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      const closeList = () => { if (listType) { html += `</${listType}>`; listType = null; } };
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line) { closeList(); continue; }
+        const bullet = line.match(/^[-•*]\s+(.*)$/);
+        const numbered = line.match(/^\d+[.)]\s+(.*)$/);
+        if (bullet) {
+          if (listType !== 'ul') { closeList(); html += '<ul>'; listType = 'ul'; }
+          html += '<li>' + inline(bullet[1]) + '</li>';
+        } else if (numbered) {
+          if (listType !== 'ol') { closeList(); html += '<ol>'; listType = 'ol'; }
+          html += '<li>' + inline(numbered[1]) + '</li>';
+        } else {
+          closeList();
+          html += '<p>' + inline(line) + '</p>';
+        }
+      }
+      closeList();
+      return html;
+    }
+
+    async function submit() {
+      const question = input.value.trim();
+      if (!question) return;
+      welcome.style.display = 'none';
+      input.value = ''; input.style.height = 'auto'; sendBtn.disabled = true;
+
+      const userMsg = document.createElement('div');
+      userMsg.className = 'msg-user'; userMsg.textContent = question;
+      thread.appendChild(userMsg);
+
+      const loading = document.createElement('div');
+      loading.className = 'answer-block';
+      loading.innerHTML = '<div class="loading"><span class="dot"></span><span class="dot"></span><span class="dot"></span> Je consulte la FAQ et je rédige votre réponse…</div>';
+      thread.appendChild(loading);
+      scrollToBottom();
+
+      try {
+        const res = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question }) });
+        const data = await res.json();
+        loading.remove();
+        if (!res.ok) renderError(data.error || 'Une erreur est survenue.');
+        else if (!data.answer && (!data.sources || data.sources.length === 0)) renderEmpty();
+        else renderAnswer(data);
+      } catch (err) {
+        loading.remove();
+        renderError("Impossible de joindre le serveur. Vérifiez votre connexion.");
+      } finally {
+        sendBtn.disabled = false; input.focus(); scrollToBottom();
+      }
+    }
+
+    function renderAnswer(data) {
+      const block = document.createElement('div');
+      block.className = 'answer-block';
+      if (data.answer) {
+        const notFound = data.found === false;
+        const card = document.createElement('div');
+        card.className = 'answer-card' + (notFound ? ' notfound' : '');
+        const badge = notFound
+          ? '<span class="answer-badge"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5v.5" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="#fff" stroke-width="2" fill="none"/></svg></span>'
+          : '<span class="answer-badge"><svg viewBox="0 0 40 44"><path d="M2 2 H38 V30 Q38 34 20 42 Q2 34 2 30 Z" fill="#fff" opacity=".18"/><path d="M13 12 H27 M13 12 V32 H27 M13 22 H24" stroke="#fff" stroke-width="3.4" fill="none"/></svg></span>';
+        card.innerHTML = `
+          <div class="answer-head">
+            ${badge}
+            <span class="answer-label">${notFound ? 'Information non trouvée' : 'Réponse'}</span>
+          </div>
+          <div class="answer-text">${formatAnswer(data.answer)}</div>`;
+        block.appendChild(card);
+      }
+      if (data.sources && data.sources.length) {
+        const st = document.createElement('div');
+        st.className = 'sources-title';
+        st.textContent = data.sources.length > 1 ? 'Articles correspondants' : 'Article correspondant';
+        block.appendChild(st);
+        data.sources.forEach((s) => {
+          const cats = (s.categories || []).map((c) => `<span class="cat">${escapeHtml(c)}</span>`).join('');
+          const el = document.createElement(s.url ? 'a' : 'div');
+          el.className = 'source';
+          if (s.url) { el.href = s.url; el.target = '_blank'; el.rel = 'noopener noreferrer'; }
+          el.innerHTML = `
+            <div class="source-top">
+              <span class="source-title">${escapeHtml(s.title)}</span>
+              ${s.url ? '<span class="source-go">Voir la page ↗</span>' : ''}
+            </div>
+            ${s.excerpt ? `<div class="source-excerpt">${escapeHtml(s.excerpt)}…</div>` : ''}
+            ${cats ? `<div class="source-cats">${cats}</div>` : ''}`;
+          block.appendChild(el);
+        });
+      }
+      thread.appendChild(block);
+    }
+
+    function renderEmpty() {
+      const block = document.createElement('div');
+      block.className = 'answer-block';
+      block.innerHTML = `<div class="empty">Je n'ai pas trouvé d'information sur ce sujet dans la FAQ. Essayez de reformuler avec d'autres mots-clés, ou contactez directement le service administratif concerné.</div>`;
+      thread.appendChild(block);
+    }
+    function renderError(message) {
+      const block = document.createElement('div');
+      block.className = 'answer-block';
+      block.innerHTML = `<div class="error-box">${escapeHtml(message)}</div>`;
+      thread.appendChild(block);
+    }
+    input.focus();
+  </script>
+</body>
+</html>
