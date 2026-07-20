@@ -47,9 +47,11 @@ const fakeAnthropic = http.createServer((req, res) => {
       if (/last update/i.test(userMsg)) sawLastUpdate = true; // doit rester false : deja nettoye cote serveur
     }
     const notFound = /piscine|inexistant/i.test(userMsg);
-    const body = notFound
-      ? { found:false, answer:"Je n'ai pas trouve cette information dans la FAQ. Contactez le service concerne.", sources:[] }
-      : { found:true, answer:"Pour obtenir votre certificat de scolarite :\n\n1. Connectez-vous a **MyESSEC**\n2. Ouvrez la rubrique **Scolarite**\n\nLe document est delivre sous 48 heures ouvrees.", sources:[1,2,3,4] };
+    const lowScore = /vague|approximatif/i.test(userMsg);
+    let body;
+    if (notFound) body = { found:false, score:1, answer:"Je n'ai pas trouve cette information dans la FAQ. Contactez le service concerne.", sources:[] };
+    else if (lowScore) body = { found:true, score:2, answer:"Reponse peu sure basee sur un sujet proche.", sources:[1] }; // doit etre refusee cote serveur (score < 3)
+    else body = { found:true, score:5, answer:"Pour obtenir votre certificat de scolarite :\n\n1. Connectez-vous a **MyESSEC**\n2. Ouvrez la rubrique **Scolarite**\n\nLe document est delivre sous 48 heures ouvrees.", sources:[1,2,3,4] };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ content: [{ type:'text', text: JSON.stringify(body) }] }));
   });
@@ -69,6 +71,8 @@ try {
   console.log('\n[test] reponse normale =>\n' + JSON.stringify(data, null, 2));
   const nf = await ask('ou est la piscine ?');
   console.log('\n[test] reponse non trouvee =>\n' + JSON.stringify(nf, null, 2));
+  const low = await ask('question vague sur le certificat');
+  console.log('\n[test] auto-note faible (score 2) =>\n' + JSON.stringify(low, null, 2));
 
   const checks = [
     ['re-ranking : titre/gras remonte "Certificat de scolarité" en 1er', firstExtraitTitle === 'Certificat de scolarité'],
@@ -79,7 +83,10 @@ try {
     ['reponse contient une liste numerotee', /1\.\s/.test(data.answer)],
     ['cas non trouve : found = false', nf.found === false],
     ['cas non trouve : AUCUNE source', Array.isArray(nf.sources) && nf.sources.length === 0],
-    ['cas non trouve : message honnete', /pas trouve/i.test(nf.answer)]
+    ['cas non trouve : message honnete', /pas trouve/i.test(nf.answer)],
+    ['auto-note < 3 : reponse refusee (found=false)', low.found === false],
+    ['auto-note < 3 : AUCUNE source', Array.isArray(low.sources) && low.sources.length === 0],
+    ['reponse valide : score renvoye', data.score === 5]
   ];
   console.log('\n[test] Verifications :');
   for (const [n, ok] of checks) { console.log(`   ${ok ? '✅' : '❌'} ${n}`); if (!ok) allOk = false; }
