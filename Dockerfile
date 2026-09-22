@@ -7,7 +7,11 @@ WORKDIR /app
 # On copie uniquement ce qui est necessaire a l'execution
 COPY package.json ./
 COPY server.js ./
+COPY journal.js ./
 COPY public ./public
+
+# Dossier du journal d'audit, accessible a l'utilisateur "node"
+RUN mkdir -p /app/logs && chown node:node /app/logs
 
 # L'utilisateur "node" existe deja dans l'image officielle
 USER node
