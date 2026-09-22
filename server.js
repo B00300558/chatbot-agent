@@ -21,7 +21,9 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import * as journal from './journal.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -168,7 +170,7 @@ async function searchFaq(question) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
-    const elkRes = await fetch(ELK_URL, {
+    const elkRes = await journal.loggedFetch('elasticsearch', ELK_URL, {
       method: 'POST',
       headers: { 'Authorization': `ApiKey ${ELK_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(buildQuery(question)),
@@ -281,7 +283,7 @@ async function generateAnswerWithClaude(question, articles) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
-    const res = await fetch(ANTHROPIC_URL, {
+    const res = await journal.loggedFetch('anthropic', ANTHROPIC_URL, {
       method: 'POST',
       headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -310,7 +312,7 @@ async function generateAnswerWithGemini(question, articles) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
-    const res = await fetch(`${GEMINI_URL}/models/${GEMINI_MODEL}:generateContent`, {
+    const res = await journal.loggedFetch('gemini', `${GEMINI_URL}/models/${GEMINI_MODEL}:generateContent`, {
       method: 'POST',
       headers: { 'x-goog-api-key': GEMINI_API_KEY, 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -337,7 +339,7 @@ async function generateAnswerWithDatabricks(question, articles) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
-    const res = await fetch(DATABRICKS_URL, {
+    const res = await journal.loggedFetch('databricks', DATABRICKS_URL, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${DATABRICKS_TOKEN}`, 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -409,11 +411,27 @@ function toSource(a) {
   return { title: a.title, url: a.url, categories: a.categories, excerpt: a.text.replace(/\s+/g, ' ').slice(0, 180) };
 }
 
-async function handleAsk(body, res) {
+async function handleAsk(body, res, ctx) {
+  const t0 = Date.now();
   const question = (body?.question || '').toString().trim();
-  if (!question) return sendJson(res, 400, { error: 'Question vide.' });
-  if (question.length > 500) return sendJson(res, 400, { error: 'Question trop longue (500 caracteres max).' });
-  if (!ELK_API_KEY) return sendJson(res, 500, { error: "Le serveur n'est pas configure : cle API Elasticsearch manquante." });
+  // Toute reponse passe par respond() : chaque question est journalisee
+  // (qui l'a posee, quel resultat, combien de sources, en combien de temps).
+  const respond = (status, obj) => {
+    journal.logAction(ctx, 'question', {
+      question: question || null,
+      statutHttp: status,
+      mode: obj?.mode ?? null,
+      trouve: obj?.found ?? null,
+      score: obj?.score ?? null,
+      nbSources: Array.isArray(obj?.sources) ? obj.sources.length : 0,
+      erreur: obj?.error || null,
+      dureeMs: Date.now() - t0
+    });
+    return sendJson(res, status, obj);
+  };
+  if (!question) return respond(400, { error: 'Question vide.' });
+  if (question.length > 500) return respond(400, { error: 'Question trop longue (500 caracteres max).' });
+  if (!ELK_API_KEY) return respond(500, { error: "Le serveur n'est pas configure : cle API Elasticsearch manquante." });
 
   // 1) Recherche + re-ranking
   let ranked;
@@ -423,14 +441,14 @@ async function handleAsk(body, res) {
   } catch (err) {
     const aborted = err?.name === 'AbortError';
     console.error('[ELK] Erreur :', err?.message, err?.detail || '');
-    return sendJson(res, aborted ? 504 : 502, {
+    return respond(aborted ? 504 : 502, {
       error: aborted ? "Le service FAQ met trop de temps a repondre. Reessayez dans un instant."
                      : "Erreur lors de la connexion a la base FAQ."
     });
   }
 
   if (!ranked.length) {
-    return sendJson(res, 200, { question, answer: null, mode: 'empty', sources: [] });
+    return respond(200, { question, answer: null, mode: 'empty', sources: [] });
   }
 
   // On soumet au RAG les meilleurs candidats (au plus MAX_SOURCES + un peu de marge).
@@ -445,7 +463,7 @@ async function handleAsk(body, res) {
       // Refus si le LLM dit found:false OU si son auto-note est < SCORE_MIN
       const found = out.found !== false && (!Number.isFinite(score) || score >= SCORE_MIN);
       if (!found) {
-        return sendJson(res, 200, { question, answer: NOT_FOUND_MSG, mode: 'claude', found: false, score: scoreVal, sources: [] });
+        return respond(200, { question, answer: NOT_FOUND_MSG, mode: 'claude', found: false, score: scoreVal, sources: [] });
       }
       // Sources reellement citees par le LLM (dedupe, cap MAX_SOURCES)
       let sources = [];
@@ -461,23 +479,23 @@ async function handleAsk(body, res) {
       }
       // Rien n'est source -> on ne montre pas de reponse
       if (!sources.length) {
-        return sendJson(res, 200, { question, answer: NOT_FOUND_MSG, mode: 'claude', found: false, score: scoreVal, sources: [] });
+        return respond(200, { question, answer: NOT_FOUND_MSG, mode: 'claude', found: false, score: scoreVal, sources: [] });
       }
-      return sendJson(res, 200, { question, answer: out.answer || null, mode: 'claude', found: true, score: scoreVal, sources });
+      return respond(200, { question, answer: out.answer || null, mode: 'claude', found: true, score: scoreVal, sources });
     } catch (err) {
       // Echec de l'appel LLM : on ne montre JAMAIS une reponse non verifiee.
       console.error(`[${LLM_PROVIDER}] Erreur LLM :`, err?.message, err?.detail || '');
-      return sendJson(res, 200, { question, answer: NOT_FOUND_MSG, mode: 'error', found: false, sources: [] });
+      return respond(200, { question, answer: NOT_FOUND_MSG, mode: 'error', found: false, sources: [] });
     }
   }
 
   // 3) Mode sans IA : extrait du meilleur article, avec garde-fou de pertinence.
   const coverage = questionCoverage(question, shortlist[0]);
   if (coverage < SYNTH_MIN_COVERAGE) {
-    return sendJson(res, 200, { question, answer: NOT_FOUND_MSG, mode: 'synthese', found: false, sources: [] });
+    return respond(200, { question, answer: NOT_FOUND_MSG, mode: 'synthese', found: false, sources: [] });
   }
   const answer = synthesizeWithoutAI(question, shortlist[0]);
-  return sendJson(res, 200, { question, answer, mode: 'synthese', found: true, sources: shortlist.slice(0, MAX_SOURCES).map(toSource) });
+  return respond(200, { question, answer, mode: 'synthese', found: true, sources: shortlist.slice(0, MAX_SOURCES).map(toSource) });
 }
 
 // -------------------------------------------------------------
@@ -510,22 +528,58 @@ function readBody(req) {
   });
 }
 
+// Identifie l'utilisateur pour le journal : adresse IP + identifiant de
+// session (cookie "faq_uid", pose automatiquement au premier passage).
+// L'application n'a pas de comptes : ce couple repond au "qui a fait quoi ?".
+function getCtx(req, res) {
+  const ip = (String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket?.remoteAddress || null;
+  const cookies = {};
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) cookies[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  let uid = cookies['faq_uid'];
+  if (!uid || !/^[a-f0-9-]{8,64}$/i.test(uid)) {
+    uid = crypto.randomUUID();
+    res.setHeader('Set-Cookie', `faq_uid=${uid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`);
+  }
+  return { ip, uid };
+}
+
 const server = http.createServer(async (req, res) => {
   const { pathname } = new URL(req.url, 'http://x');
+  const ctx = getCtx(req, res);
   if (req.method === 'GET' && pathname === '/api/health') {
+    journal.logAction(ctx, 'consultation_etat', { page: pathname });
     return sendJson(res, 200, { ok: true, elkConfigured: Boolean(ELK_API_KEY), ragEnabled: RAG_ENABLED, provider: RAG_ENABLED ? LLM_PROVIDER : null, model: RAG_ENABLED ? LLM_MODEL : null, maxSources: MAX_SOURCES });
   }
   if (req.method === 'POST' && pathname === '/api/ask') {
-    try { return handleAsk(await readBody(req), res); } catch { return sendJson(res, 400, { error: 'Requete invalide.' }); }
+    try { return handleAsk(await readBody(req), res, ctx); } catch { return sendJson(res, 400, { error: 'Requete invalide.' }); }
   }
-  if (req.method === 'GET') return serveStatic(req, res);
+  if (req.method === 'GET') {
+    if (pathname === '/' || pathname === '/index.html') journal.logAction(ctx, 'visite_page', { page: pathname });
+    return serveStatic(req, res);
+  }
   res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Methode non autorisee');
 });
 
 server.listen(PORT, () => {
+  // Journal : detecte les modifications du code depuis le dernier demarrage,
+  // puis enregistre le demarrage du serveur.
+  const codeState = journal.checkCodeChanges();
+  journal.logServerStart({
+    port: PORT,
+    fournisseurLLM: RAG_ENABLED ? LLM_PROVIDER : null,
+    modele: RAG_ENABLED ? LLM_MODEL : null,
+    ragActif: RAG_ENABLED,
+    elkConfigure: Boolean(ELK_API_KEY),
+    git: codeState.git,
+    nbFichiersSuivis: codeState.nbFichiersSuivis
+  });
   console.log(`\n  Assistant FAQ ESSEC demarre`);
   console.log(`  -> Interface : http://localhost:${PORT}`);
   console.log(`  -> Index ELK : ${ELK_URL}  (cle ${ELK_API_KEY ? 'OK' : 'MANQUANTE'})`);
   console.log(`  -> RAG LLM   : ${RAG_ENABLED ? `active (${LLM_PROVIDER} / ${LLM_MODEL})` : 'desactive (synthese sans IA)'}`);
-  console.log(`  -> Sources   : ${MAX_SOURCES} maximum\n`);
+  console.log(`  -> Sources   : ${MAX_SOURCES} maximum`);
+  console.log(`  -> Journal   : ${journal.JOURNAL_FILE}\n`);
 });
