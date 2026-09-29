@@ -301,6 +301,51 @@ async function generateAnswer(question, articles) {
 }
 
 // -------------------------------------------------------------
+//  Disponibilite de l'API Databricks (bouton de l'interface)
+// -------------------------------------------------------------
+//  Vrai appel minimal (max_tokens: 1). Le resultat est garde en cache
+//  LLM_STATUS_TTL_MS pour ne pas consommer de jetons a chaque clic ;
+//  les demandes simultanees partagent le meme appel en cours.
+const LLM_STATUS_TTL_MS = 30_000;
+let llmStatusCache = null;     // { at, value }
+let llmStatusPending = null;   // Promise en cours
+
+async function probeDatabricks() {
+  if (!LLM_PROVIDER) return { configured: false, available: false, etat: 'non_configure' };
+  const t0 = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const res = await journal.loggedFetch('databricks', DATABRICKS_URL, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${DATABRICKS_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
+      signal: controller.signal
+    });
+    await res.text().catch(() => '');
+    return { configured: true, available: res.ok, etat: res.ok ? 'disponible' : 'indisponible', statutHttp: res.status, latenceMs: Date.now() - t0 };
+  } catch (err) {
+    return { configured: true, available: false, etat: err?.name === 'AbortError' ? 'timeout' : 'indisponible', latenceMs: Date.now() - t0 };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function getLlmStatus() {
+  if (llmStatusCache && Date.now() - llmStatusCache.at < LLM_STATUS_TTL_MS) return llmStatusCache.value;
+  if (!llmStatusPending) {
+    llmStatusPending = probeDatabricks()
+      .then((r) => {
+        const value = { ...r, provider: LLM_PROVIDER, model: LLM_MODEL, ragEnabled: RAG_ENABLED, checkedAt: new Date().toISOString() };
+        llmStatusCache = { at: Date.now(), value };
+        return value;
+      })
+      .finally(() => { llmStatusPending = null; });
+  }
+  return llmStatusPending;
+}
+
+// -------------------------------------------------------------
 //  Repli sans IA : synthese RECENTREE SUR LA QUESTION
 //  (on garde les phrases de l'article qui recoupent le plus la question)
 // -------------------------------------------------------------
@@ -479,6 +524,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && pathname === '/api/health') {
     journal.logAction(ctx, 'consultation_etat', { page: pathname });
     return sendJson(res, 200, { ok: true, elkConfigured: Boolean(ELK_API_KEY), ragEnabled: RAG_ENABLED, provider: RAG_ENABLED ? LLM_PROVIDER : null, model: RAG_ENABLED ? LLM_MODEL : null, maxSources: MAX_SOURCES });
+  }
+  if (req.method === 'GET' && pathname === '/api/llm-status') {
+    const status = await getLlmStatus();
+    journal.logAction(ctx, 'consultation_etat_llm', { page: pathname, etat: status.etat });
+    return sendJson(res, 200, status);
   }
   if (req.method === 'POST' && pathname === '/api/ask') {
     try { return handleAsk(await readBody(req), res, ctx); } catch { return sendJson(res, 400, { error: 'Requete invalide.' }); }

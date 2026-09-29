@@ -39,10 +39,24 @@
     }
     .brand { display: flex; align-items: center; }
     .brand .logo { height: 52px; width: auto; display: block; }
-    .header-right { margin-left: auto; text-align: right; color: #fff; }
+    .header-right { text-align: right; color: #fff; }
     .tagline { font-size: 14px; font-weight: 700; color: #fff; letter-spacing: .3px; }
     .subtitle { font-size: 12.5px; color: rgba(255,255,255,.85); margin-top: 2px; }
-    @media (max-width: 620px) { .header-right { display: none; } .brand .logo { height: 44px; } }
+
+    /* Bouton de disponibilite de l'API Databricks */
+    .llm-status {
+      margin-left: auto; display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(255,255,255,.16); color: #fff; border: 1px solid rgba(255,255,255,.35);
+      border-radius: 999px; padding: 7px 13px; font: 500 12.5px var(--font); cursor: pointer;
+      transition: .15s; white-space: nowrap;
+    }
+    .llm-status:hover { background: rgba(255,255,255,.26); }
+    .llm-status:disabled { cursor: progress; opacity: .85; }
+    .llm-status .led { width: 9px; height: 9px; border-radius: 50%; background: #cfd6df; box-shadow: 0 0 0 2px rgba(255,255,255,.35); }
+    .llm-status[data-etat="disponible"] .led { background: #2ecc71; }
+    .llm-status[data-etat="indisponible"] .led, .llm-status[data-etat="timeout"] .led { background: #ff5a4f; }
+    .llm-status[data-etat="verification"] .led { animation: bounce 1s infinite; }
+    @media (max-width: 620px) { .header-right { display: none; } .brand .logo { height: 44px; } .llm-status { padding: 6px 10px; font-size: 12px; } }
 
     main { flex: 1; width: 100%; max-width: 840px; margin: 0 auto; padding: 24px 16px 150px; display: flex; flex-direction: column; }
 
@@ -146,6 +160,10 @@
       <!-- Logo officiel ESSEC (version blanche, vectoriel) -->
       <img class="logo" src="logo-essec.svg" alt="ESSEC Business School" />
     </div>
+    <button id="llm-status" class="llm-status" data-etat="verification" title="Cliquer pour vérifier à nouveau la disponibilité de l'API Databricks">
+      <span class="led" aria-hidden="true"></span>
+      <span id="llm-status-text">IA Databricks : vérification…</span>
+    </button>
     <div class="header-right">
       <div class="tagline">Enlighten. Lead. Change.</div>
       <div class="subtitle">Assistant FAQ étudiants</div>
@@ -302,6 +320,40 @@
       block.innerHTML = `<div class="error-box">${escapeHtml(message)}</div>`;
       thread.appendChild(block);
     }
+    // Bouton de disponibilite de l'API Databricks : verifie au chargement et a chaque clic.
+    const llmBtn = document.getElementById('llm-status');
+    const llmText = document.getElementById('llm-status-text');
+    const LLM_LABELS = {
+      disponible: 'IA Databricks : disponible',
+      indisponible: 'IA Databricks : indisponible',
+      timeout: 'IA Databricks : ne répond pas',
+      non_configure: 'IA Databricks : non configurée'
+    };
+    async function checkLlmStatus() {
+      llmBtn.disabled = true; llmBtn.dataset.etat = 'verification';
+      llmText.textContent = 'IA Databricks : vérification…';
+      try {
+        const s = await fetch('/api/llm-status').then((r) => r.json());
+        llmBtn.dataset.etat = s.etat;
+        llmText.textContent = LLM_LABELS[s.etat] || 'IA Databricks : état inconnu';
+        const heure = s.checkedAt ? new Date(s.checkedAt).toLocaleTimeString('fr-FR') : '';
+        llmBtn.title = [
+          s.model ? `Modèle : ${s.model}` : null,
+          s.statutHttp ? `Statut HTTP : ${s.statutHttp}` : null,
+          s.latenceMs != null ? `Temps de réponse : ${s.latenceMs} ms` : null,
+          heure ? `Vérifié à ${heure}` : null,
+          'Cliquer pour vérifier à nouveau'
+        ].filter(Boolean).join('\n');
+      } catch {
+        llmBtn.dataset.etat = 'indisponible';
+        llmText.textContent = 'IA Databricks : serveur injoignable';
+      } finally {
+        llmBtn.disabled = false;
+      }
+    }
+    llmBtn.addEventListener('click', checkLlmStatus);
+    checkLlmStatus();
+
     input.focus();
   </script>
 </body>
