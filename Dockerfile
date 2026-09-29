@@ -10,8 +10,9 @@ COPY server.js ./
 COPY journal.js ./
 COPY public ./public
 
-# Dossier du journal d'audit, accessible a l'utilisateur "node"
-RUN mkdir -p /app/logs && chown node:node /app/logs
+# Fichiers lisibles par "node" quels que soient les droits sur la machine hote,
+# et dossier du journal d'audit accessible en ecriture
+RUN chmod -R a+rX /app && mkdir -p /app/logs && chown node:node /app/logs
 
 # L'utilisateur "node" existe deja dans l'image officielle
 USER node
