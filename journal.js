@@ -10,7 +10,7 @@
 //     detecte au demarrage (empreinte SHA-256), avec le dernier
 //     commit Git si disponible
 //   - connexion_interface : chaque connexion aux interfaces externes
-//     (elasticsearch, databricks, gemini, anthropic) et son etat
+//     (elasticsearch, databricks) et son etat
 //     (ok / erreur / timeout), statut HTTP et duree
 //   - demarrage_serveur  : chaque demarrage de l'application
 //
@@ -63,7 +63,7 @@ export function logConnection(cible, etat, details = {}) {
 }
 
 //  Remplacant de fetch() qui journalise chaque connexion :
-//  cible = 'elasticsearch' | 'databricks' | 'gemini' | 'anthropic'
+//  cible = 'elasticsearch' | 'databricks'
 //  etat  = 'ok' (2xx) | 'erreur' (statut HTTP != 2xx ou erreur reseau) | 'timeout'
 export async function loggedFetch(cible, url, options) {
   const t0 = Date.now();

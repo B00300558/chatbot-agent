@@ -1,5 +1,5 @@
 // =============================================================
-//  Assistant FAQ ESSEC  -  Backend / proxy Elasticsearch + RAG Claude
+//  Assistant FAQ ESSEC  -  Backend / proxy Elasticsearch + RAG Databricks
 // -------------------------------------------------------------
 //  ZERO DEPENDANCE : uniquement les modules natifs de Node.js
 //  (aucun npm install requis, Node >= 18).
@@ -9,12 +9,12 @@
 //   2. Interroge Elasticsearch (index myessec_faq) -> candidats FAQ
 //   3. Re-classe les candidats en donnant plus de poids au TITRE
 //      et aux passages en GRAS (<strong>/<b>) de l'article
-//   4. Demande a Claude de REDIGER une reponse ancree UNIQUEMENT
+//   4. Demande au LLM Databricks (Claude Sonnet 4.5) de REDIGER une reponse ancree UNIQUEMENT
 //      dans ces articles, en repondant a l'objectif de la question,
 //      et d'indiquer quels articles sont reellement pertinents
 //   5. Renvoie la reponse construite + AU PLUS 3 sources (0 si rien)
 //
-//  Sans cle Anthropic -> synthese sans IA, recentree sur la question.
+//  Sans URL/token Databricks -> synthese sans IA, recentree sur la question.
 //  Les cles API restent cote serveur, jamais envoyees au navigateur.
 // =============================================================
 
@@ -51,24 +51,13 @@ const PORT = Number(process.env.PORT) || 3000;
 const CANDIDATES = Number(process.env.CANDIDATES) || 10;   // candidats recuperes pour le re-ranking
 const MAX_SOURCES = Number(process.env.MAX_SOURCES) || 3;  // articles affiches au maximum
 
-// --- Fournisseur LLM : Databricks (endpoint interne) > Gemini (gratuit) > Anthropic ---
+// --- Fournisseur LLM unique : Databricks (endpoint interne ESSEC) ---
 const DATABRICKS_URL = process.env.DATABRICKS_URL || '';       // ex: https://adb-xxxx.azuredatabricks.net/serving-endpoints/databricks-claude-sonnet-4-5/invocations
 const DATABRICKS_TOKEN = process.env.DATABRICKS_TOKEN || '';   // token d'acces Databricks (dapi...)
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-const GEMINI_URL = process.env.GEMINI_URL || 'https://generativelanguage.googleapis.com/v1beta';
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
-const ANTHROPIC_URL = process.env.ANTHROPIC_URL || 'https://api.anthropic.com/v1/messages';
 const SCORE_MIN = Number(process.env.SCORE_MIN) || 3;  // note minimale (1-5) pour afficher la reponse
 const SYNTH_MIN_COVERAGE = Number(process.env.SYNTH_MIN_COVERAGE) || 0.5; // mode sans IA : part minimale des mots de la question retrouves dans l'article
-const LLM_PROVIDER = (DATABRICKS_URL && DATABRICKS_TOKEN) ? 'databricks'
-  : GEMINI_API_KEY ? 'gemini'
-  : ANTHROPIC_API_KEY ? 'anthropic'
-  : null;
-const LLM_MODEL = LLM_PROVIDER === 'databricks' ? (DATABRICKS_URL.match(/serving-endpoints\/([^/]+)/)?.[1] || 'databricks-endpoint')
-  : LLM_PROVIDER === 'gemini' ? GEMINI_MODEL
-  : ANTHROPIC_MODEL;
+const LLM_PROVIDER = (DATABRICKS_URL && DATABRICKS_TOKEN) ? 'databricks' : null;
+const LLM_MODEL = LLM_PROVIDER ? (DATABRICKS_URL.match(/serving-endpoints\/([^/]+)/)?.[1] || 'databricks-endpoint') : null;
 const RAG_ENABLED = String(process.env.RAG_ENABLED ?? 'true').toLowerCase() === 'true' && Boolean(LLM_PROVIDER);
 
 if (String(process.env.ELK_INSECURE).toLowerCase() === 'true') {
@@ -76,7 +65,7 @@ if (String(process.env.ELK_INSECURE).toLowerCase() === 'true') {
   console.warn('[WARN] ELK_INSECURE=true : verification du certificat TLS desactivee.');
 }
 if (!ELK_API_KEY) console.warn('[WARN] ELK_API_KEY vide : renseigne ta cle Elasticsearch dans .env.');
-if (!LLM_PROVIDER) console.warn('[WARN] Aucune cle LLM (DATABRICKS_URL+TOKEN, GEMINI_API_KEY ou ANTHROPIC_API_KEY) : bascule sur la synthese sans IA.');
+if (!LLM_PROVIDER) console.warn('[WARN] DATABRICKS_URL ou DATABRICKS_TOKEN manquant : bascule sur la synthese sans IA.');
 
 // -------------------------------------------------------------
 //  Nettoyage HTML / entites
@@ -279,63 +268,8 @@ function parseClaudeJson(text) {
   try { return JSON.parse(t.slice(start, end + 1)); } catch { return null; }
 }
 
-async function generateAnswerWithClaude(question, articles) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
-  try {
-    const res = await journal.loggedFetch('anthropic', ANTHROPIC_URL, {
-      method: 'POST',
-      headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: 800,
-        temperature: 0.1,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: buildRagUserMessage(question, articles) }]
-      }),
-      signal: controller.signal
-    });
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '');
-      const err = new Error(`Anthropic ${res.status}`); err.detail = detail.slice(0, 300); throw err;
-    }
-    const data = await res.json();
-    const text = (data?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
-    return parseClaudeJson(text) || { found: true, score: SCORE_MIN, answer: text, sources: null };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-// Gemini (Google AI Studio, palier gratuit)
-async function generateAnswerWithGemini(question, articles) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
-  try {
-    const res = await journal.loggedFetch('gemini', `${GEMINI_URL}/models/${GEMINI_MODEL}:generateContent`, {
-      method: 'POST',
-      headers: { 'x-goog-api-key': GEMINI_API_KEY, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: 'user', parts: [{ text: buildRagUserMessage(question, articles) }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 800, responseMimeType: 'application/json' }
-      }),
-      signal: controller.signal
-    });
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '');
-      const err = new Error(`Gemini ${res.status}`); err.detail = detail.slice(0, 300); throw err;
-    }
-    const data = await res.json();
-    const text = (data?.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('\n').trim();
-    return parseClaudeJson(text) || { found: true, score: SCORE_MIN, answer: text, sources: null };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 // Databricks Model Serving (endpoint interne, format OpenAI chat completions)
-async function generateAnswerWithDatabricks(question, articles) {
+async function generateAnswer(question, articles) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
@@ -364,13 +298,6 @@ async function generateAnswerWithDatabricks(question, articles) {
   } finally {
     clearTimeout(timeout);
   }
-}
-
-// Dispatcher selon le fournisseur configure
-function generateAnswer(question, articles) {
-  if (LLM_PROVIDER === 'databricks') return generateAnswerWithDatabricks(question, articles);
-  if (LLM_PROVIDER === 'gemini') return generateAnswerWithGemini(question, articles);
-  return generateAnswerWithClaude(question, articles);
 }
 
 // -------------------------------------------------------------
