@@ -388,9 +388,11 @@ async function handleAsk(body, res, ctx) {
   const question = (body?.question || '').toString().trim();
   // Toute reponse passe par respond() : chaque question est journalisee
   // (qui l'a posee, quel resultat, combien de sources, en combien de temps).
+  const origine = body?.origine === 'suggestion' ? 'suggestion' : 'saisie';
   const respond = (status, obj) => {
     journal.logAction(ctx, 'question', {
       question: question || null,
+      origine,
       statutHttp: status,
       mode: obj?.mode ?? null,
       trouve: obj?.found ?? null,
@@ -479,14 +481,20 @@ const MIME = {
   '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon'
 };
 function sendJson(res, status, obj) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); }
-function serveStatic(req, res) {
+function serveStatic(req, res, ctx) {
   const urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   const rel = urlPath === '/' ? '/index.html' : urlPath;
   const safe = path.normalize(rel).replace(/^(\.\.[/\\])+/, '');
   const filePath = path.join(__dirname, 'public', safe);
-  if (!filePath.startsWith(path.join(__dirname, 'public'))) { res.writeHead(403); return res.end('Forbidden'); }
+  if (!filePath.startsWith(path.join(__dirname, 'public'))) {
+    journal.logAction(ctx, 'acces_refuse', { page: urlPath, statutHttp: 403 });
+    res.writeHead(403); return res.end('Forbidden');
+  }
   fs.readFile(filePath, (err, content) => {
-    if (err) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Page introuvable'); }
+    if (err) {
+      journal.logAction(ctx, 'page_introuvable', { page: urlPath, statutHttp: 404 });
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Page introuvable');
+    }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream' });
     res.end(content);
   });
@@ -503,6 +511,7 @@ function readBody(req) {
 // Identifie l'utilisateur pour le journal : adresse IP + identifiant de
 // session (cookie "faq_uid", pose automatiquement au premier passage).
 // L'application n'a pas de comptes : ce couple repond au "qui a fait quoi ?".
+// reqId relie une action aux connexions (Elasticsearch, Databricks) qu'elle declenche.
 function getCtx(req, res) {
   const ip = (String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket?.remoteAddress || null;
   const cookies = {};
@@ -515,14 +524,31 @@ function getCtx(req, res) {
     uid = crypto.randomUUID();
     res.setHeader('Set-Cookie', `faq_uid=${uid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`);
   }
-  return { ip, uid };
+  return { reqId: crypto.randomBytes(4).toString('hex'), ip, uid };
 }
 
-const server = http.createServer(async (req, res) => {
+// Evenements envoyes par l'interface (actions que le serveur ne voit pas passer,
+// comme l'ouverture d'un article source dans un nouvel onglet).
+const clip = (v, n) => (typeof v === 'string' ? v.slice(0, n) : null);
+function handleTrack(body, res, ctx) {
+  if (body?.event !== 'clic_source') {
+    journal.logAction(ctx, 'requete_invalide', { page: '/api/track', statutHttp: 400, erreur: 'Evenement inconnu' });
+    return sendJson(res, 400, { error: 'Evenement inconnu.' });
+  }
+  const url = clip(body.url, 500);
+  journal.logAction(ctx, 'clic_source', {
+    titre: clip(body.title, 300),
+    url: url && /^https?:\/\//i.test(url) ? url : null,
+    question: clip(body.question, 500)
+  });
+  res.writeHead(204); return res.end();
+}
+
+async function route(req, res, ctx) {
   const { pathname } = new URL(req.url, 'http://x');
-  const ctx = getCtx(req, res);
   if (req.method === 'GET' && pathname === '/api/health') {
-    journal.logAction(ctx, 'consultation_etat', { page: pathname });
+    // Le healthcheck Docker (toutes les 30 s) n'est pas une action d'utilisateur.
+    if (req.headers['x-healthcheck'] !== 'docker') journal.logAction(ctx, 'consultation_etat', { page: pathname });
     return sendJson(res, 200, { ok: true, elkConfigured: Boolean(ELK_API_KEY), ragEnabled: RAG_ENABLED, provider: RAG_ENABLED ? LLM_PROVIDER : null, model: RAG_ENABLED ? LLM_MODEL : null, maxSources: MAX_SOURCES });
   }
   if (req.method === 'GET' && pathname === '/api/llm-status') {
@@ -530,14 +556,29 @@ const server = http.createServer(async (req, res) => {
     journal.logAction(ctx, 'consultation_etat_llm', { page: pathname, etat: status.etat });
     return sendJson(res, 200, status);
   }
-  if (req.method === 'POST' && pathname === '/api/ask') {
-    try { return handleAsk(await readBody(req), res, ctx); } catch { return sendJson(res, 400, { error: 'Requete invalide.' }); }
+  if (req.method === 'POST' && (pathname === '/api/ask' || pathname === '/api/track')) {
+    let body;
+    try { body = await readBody(req); } catch (err) {
+      journal.logAction(ctx, 'requete_invalide', { page: pathname, statutHttp: 400, erreur: err?.message || 'Requete invalide' });
+      return sendJson(res, 400, { error: 'Requete invalide.' });
+    }
+    return pathname === '/api/ask' ? handleAsk(body, res, ctx) : handleTrack(body, res, ctx);
   }
   if (req.method === 'GET') {
     if (pathname === '/' || pathname === '/index.html') journal.logAction(ctx, 'visite_page', { page: pathname });
-    return serveStatic(req, res);
+    return serveStatic(req, res, ctx);
   }
+  journal.logAction(ctx, 'methode_refusee', { page: pathname, methode: req.method, statutHttp: 405 });
   res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Methode non autorisee');
+}
+
+const server = http.createServer((req, res) => {
+  const ctx = getCtx(req, res);
+  journal.runWithContext(ctx, () => route(req, res, ctx)).catch((err) => {
+    // Ex : URL mal encodee (decodeURIComponent) -> 400 journalise, sans faire tomber le serveur.
+    journal.logAction(ctx, 'requete_invalide', { page: String(req.url).slice(0, 200), statutHttp: 400, erreur: err?.message || String(err) });
+    if (!res.headersSent) sendJson(res, 400, { error: 'Requete invalide.' }); else res.end();
+  });
 });
 
 server.listen(PORT, () => {

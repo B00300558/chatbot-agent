@@ -5,7 +5,8 @@
 //
 //  Enregistre dans logs/journal.log (une ligne JSON par evenement) :
 //   - action_utilisateur : qui a fait quoi (question posee, visite
-//     de page, consultation d'etat), avec identifiant de session + IP
+//     de page, clic sur une source, consultation d'etat, requete
+//     invalide ou refusee), avec identifiant de session + IP
 //   - modification_code  : tout changement des fichiers du code
 //     detecte au demarrage (empreinte SHA-256), avec le dernier
 //     commit Git si disponible
@@ -13,6 +14,9 @@
 //     (elasticsearch, databricks) et son etat
 //     (ok / erreur / timeout), statut HTTP et duree
 //   - demarrage_serveur  : chaque demarrage de l'application
+//
+//  Chaque action et les connexions qu'elle declenche partagent le
+//  meme numero de "requete" : on sait quel appel a servi a quelle action.
 //
 //  Format : NDJSON (une ligne = un evenement JSON), lisible avec
 //  n'importe quel outil (tail -f, jq, import tableur...).
@@ -22,12 +26,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LOG_DIR = path.join(__dirname, 'logs');
+const LOG_DIR = process.env.LOG_DIR ? path.resolve(process.env.LOG_DIR) : path.join(__dirname, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'journal.log');
-const STATE_FILE = path.join(LOG_DIR, 'code-state.json');
+// "local" (node server.js) ou "docker" (defini dans le Dockerfile) : chaque
+// environnement a son propre etat, sinon alterner les deux cree de faux ecarts.
+const ENVIRONNEMENT = process.env.APP_ENV || 'local';
+const STATE_FILE = path.join(LOG_DIR, `code-state-${ENVIRONNEMENT}.json`);
+// Commit Git grave dans l'image Docker au moment du build (pas de .git dans le conteneur).
+const BUILD_INFO_FILE = path.join(__dirname, 'build-info.txt');
+
+// Contexte de la requete HTTP en cours ({ reqId, uid, ip }), propage
+// automatiquement a travers les appels asynchrones (fetch compris).
+const requestContext = new AsyncLocalStorage();
+export function runWithContext(ctx, fn) { return requestContext.run(ctx, fn); }
 
 try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch { /* ignore */ }
 
@@ -45,10 +60,11 @@ function write(event) {
 // -------------------------------------------------------------
 //  1) Actions des utilisateurs (qui a fait quoi ?)
 // -------------------------------------------------------------
-//  ctx = { uid, ip } fourni par server.js (cookie de session + adresse IP).
+//  ctx = { reqId, uid, ip } fourni par server.js (cookie de session + adresse IP).
 export function logAction(ctx, action, details = {}) {
   write({
     type: 'action_utilisateur',
+    requete: ctx?.reqId || null,
     utilisateur: { id: ctx?.uid || null, ip: ctx?.ip || null },
     action,
     ...details
@@ -59,7 +75,8 @@ export function logAction(ctx, action, details = {}) {
 //  2) Connexions aux interfaces externes et leur etat
 // -------------------------------------------------------------
 export function logConnection(cible, etat, details = {}) {
-  write({ type: 'connexion_interface', cible, etat, ...details });
+  const ctx = requestContext.getStore();
+  write({ type: 'connexion_interface', requete: ctx?.reqId || null, cible, etat, ...details });
 }
 
 //  Remplacant de fetch() qui journalise chaque connexion :
@@ -82,7 +99,7 @@ export async function loggedFetch(cible, url, options) {
 //  3) Modifications apportees au code de l'application
 // -------------------------------------------------------------
 //  A chaque demarrage : empreinte SHA-256 de chaque fichier du code,
-//  comparaison avec l'etat precedent (logs/code-state.json), et
+//  comparaison avec l'etat precedent (logs/code-state-<environnement>.json), et
 //  journalisation des fichiers ajoutes / modifies / supprimes.
 //  Le dernier commit Git (auteur, date, message) est joint si possible.
 
@@ -105,16 +122,22 @@ function hashFile(rel) {
   return crypto.createHash('sha256').update(buf).digest('hex').slice(0, 16);
 }
 
+function parseGitLine(out, source) {
+  if (!out) return null;
+  const [commit, auteur, date, ...msg] = out.trim().split('|');
+  return commit ? { commit, auteur, date, message: msg.join('|'), source } : null;
+}
+
 function gitInfo() {
   try {
     const out = execSync('git log -1 --format=%h|%an|%aI|%s', {
       cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000
-    }).toString().trim();
-    const [commit, auteur, date, ...msg] = out.split('|');
-    return { commit, auteur, date, message: msg.join('|') };
-  } catch {
-    return null; // pas de Git disponible (ex : conteneur Docker sans .git)
-  }
+    }).toString();
+    const info = parseGitLine(out, 'git');
+    if (info) return info;
+  } catch { /* pas de Git (ex : conteneur Docker) */ }
+  // Repli : commit enregistre dans l'image au moment du "docker build"
+  try { return parseGitLine(fs.readFileSync(BUILD_INFO_FILE, 'utf8'), 'image'); } catch { return null; }
 }
 
 export function checkCodeChanges() {
@@ -136,19 +159,19 @@ export function checkCodeChanges() {
     }
     for (const f of Object.keys(precedent)) if (!(f in etatActuel)) supprimes.push(f);
     if (modifies.length || ajoutes.length || supprimes.length) {
-      write({ type: 'modification_code', fichiersModifies: modifies, fichiersAjoutes: ajoutes, fichiersSupprimes: supprimes, git });
+      write({ type: 'modification_code', environnement: ENVIRONNEMENT, fichiersModifies: modifies, fichiersAjoutes: ajoutes, fichiersSupprimes: supprimes, git });
     }
   }
 
   try { fs.writeFileSync(STATE_FILE, JSON.stringify(etatActuel, null, 2)); } catch { /* ignore */ }
-  return { git, nbFichiersSuivis: Object.keys(etatActuel).length };
+  return { git, environnement: ENVIRONNEMENT, nbFichiersSuivis: Object.keys(etatActuel).length };
 }
 
 // -------------------------------------------------------------
 //  4) Demarrage du serveur
 // -------------------------------------------------------------
 export function logServerStart(details = {}) {
-  write({ type: 'demarrage_serveur', ...details });
+  write({ type: 'demarrage_serveur', environnement: ENVIRONNEMENT, ...details });
 }
 
 export const JOURNAL_FILE = LOG_FILE;

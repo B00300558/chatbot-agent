@@ -3,6 +3,8 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // Playwright (capture d'ecran) est facultatif : si absent, seuls les tests d'API tournent.
 let chromium = null;
@@ -73,7 +75,10 @@ await new Promise(r => fakeDbx.listen(9993, r));
 
 const DBX_OK = 'http://localhost:9993/serving-endpoints/databricks-claude-sonnet-4-5/invocations';
 const DBX_DOWN = 'http://localhost:9993/down/serving-endpoints/databricks-claude-sonnet-4-5/invocations';
-const baseEnv = { ...process.env, ELK_URL:'http://localhost:9990/_search', ELK_API_KEY:'elk', MAX_SOURCES:'3' };
+// Journal d'audit des tests dans un dossier temporaire (le vrai logs/journal.log n'est pas touche).
+const LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'faq-journal-'));
+const readJournal = () => fs.readFileSync(path.join(LOG_DIR, 'journal.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+const baseEnv = { ...process.env, ELK_URL:'http://localhost:9990/_search', ELK_API_KEY:'elk', MAX_SOURCES:'3', LOG_DIR };
 // --- Serveur 1 : RAG Databricks ---
 const srv = spawn('node', ['server.js'], { cwd: process.cwd(), env: { ...baseEnv,
   DATABRICKS_URL: DBX_OK, DATABRICKS_TOKEN:'dapi-test', PORT:'3212' }, stdio:'inherit' });
@@ -102,6 +107,18 @@ try {
   const st2 = await fetch('http://localhost:3212/api/llm-status').then(r=>r.json());
   const stNone = await fetch('http://localhost:3213/api/llm-status').then(r=>r.json());
   const stDown = await fetch('http://localhost:3214/api/llm-status').then(r=>r.json());
+  // Journal d'audit : evenements supplementaires puis lecture du fichier
+  const suggestion = await fetch('http://localhost:3212/api/ask', { method:'POST', body: JSON.stringify({ question:'certificat de scolarité', origine:'suggestion' }) }).then(r => r.json());
+  const trackStatus = await fetch('http://localhost:3212/api/track', { method:'POST', body: JSON.stringify({ event:'clic_source', url:'https://my.essec.fr/faq/certificat', title:'Certificat de scolarité', question:'certificat' }) }).then(r => r.status);
+  const trackBad = await fetch('http://localhost:3212/api/track', { method:'POST', body: JSON.stringify({ event:'autre' }) }).then(r => r.status);
+  const badJson = await fetch('http://localhost:3212/api/ask', { method:'POST', body:'{pas du json' }).then(r => r.status);
+  const refused = await fetch('http://localhost:3212/api/ask', { method:'DELETE' }).then(r => r.status);
+  const malformed = await fetch('http://localhost:3212/%E0%A4%A').then(r => r.status);
+  await fetch('http://localhost:3212/api/health', { headers: { 'X-Healthcheck':'docker' } });
+  await new Promise(r => setTimeout(r, 200));
+  const journal = readJournal();
+  const qEvt = journal.find(e => e.action === 'question' && e.origine === 'suggestion');
+  const qConn = journal.filter(e => e.type === 'connexion_interface' && qEvt && e.requete === qEvt.requete).map(e => e.cible).sort().join(',');
   console.log('[test] health =>', JSON.stringify(health));
   console.log('[test] llm-status =>', JSON.stringify(st1));
   console.log('[test] normale => found=%s score=%s sources=%d', data.found, data.score, data.sources.length);
@@ -126,7 +143,16 @@ try {
     ['llm-status : cache 30 s (1 seul appel reel pour 2 demandes)', pingCount === 1 && st2.checkedAt === st1.checkedAt],
     ['llm-status : non configure', stNone.etat === 'non_configure' && stNone.configured === false],
     ['llm-status : en panne -> indisponible (503)', stDown.etat === 'indisponible' && stDown.available === false && stDown.statutHttp === 503],
-    ['llm-status : jeton jamais renvoye au navigateur', !JSON.stringify([st1, stNone, stDown]).includes('dapi-test')]
+    ['llm-status : jeton jamais renvoye au navigateur', !JSON.stringify([st1, stNone, stDown]).includes('dapi-test')],
+    ['journal : question avec origine "suggestion"', suggestion.found === true && Boolean(qEvt)],
+    ['journal : la question et ses connexions partagent le meme numero de requete', qConn === 'databricks,elasticsearch'],
+    ['journal : clic sur une source enregistre', trackStatus === 204 && journal.some(e => e.action === 'clic_source' && e.titre === 'Certificat de scolarité')],
+    ['journal : evenement inconnu refuse et enregistre', trackBad === 400 && journal.some(e => e.action === 'requete_invalide' && e.page === '/api/track')],
+    ['journal : JSON invalide enregistre', badJson === 400 && journal.some(e => e.action === 'requete_invalide' && e.erreur === 'Invalid JSON')],
+    ['journal : methode refusee enregistree', refused === 405 && journal.some(e => e.action === 'methode_refusee')],
+    ['journal : URL malformee -> 400 sans plantage', malformed === 400 && journal.some(e => e.erreur === 'URI malformed')],
+    ['journal : healthcheck Docker non enregistre', journal.filter(e => e.action === 'consultation_etat').length === 2],
+    ['journal : demarrages en environnement "local"', journal.filter(e => e.type === 'demarrage_serveur' && e.environnement === 'local').length === 3]
   ];
   console.log('\n[test] Verifications :');
   for (const [n, ok] of checks) { console.log(`   ${ok ? '✅' : '❌'} ${n}`); if (!ok) allOk = false; }
@@ -147,4 +173,4 @@ try {
 
   console.log(allOk ? '\n=== TOUS LES TESTS PASSENT ===' : '\n=== ECHEC ===');
 } catch (e) { console.error('[test] ERREUR', e); allOk = false; }
-finally { srv.kill(); srv2.kill(); srv3.kill(); fakeElk.close(); fakeDbx.close(); process.exit(allOk ? 0 : 1); }
+finally { srv.kill(); srv2.kill(); srv3.kill(); fakeElk.close(); fakeDbx.close(); fs.rmSync(LOG_DIR, { recursive: true, force: true }); process.exit(allOk ? 0 : 1); }

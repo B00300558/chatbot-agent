@@ -84,6 +84,7 @@ Le journal d'audit est conservé sur la machine hôte dans `./logs/`.
 | `SCORE_MIN`         | Note minimale (1-5) que le LLM doit s'attribuer pour afficher sa réponse | `3` |
 | `SYNTH_MIN_COVERAGE`| Mode sans IA : part minimale (0-1) des mots de la question retrouvés dans l'article | `0.5` |
 | `RAG_ENABLED`       | `false` force le mode sans IA même si Databricks est configuré | `true` |
+| `LOG_DIR`           | Dossier du journal d'audit | `./logs` |
 | `PORT`              | Port du serveur web                                        | `3000` |
 
 ## Points d'accès HTTP
@@ -92,15 +93,30 @@ Le journal d'audit est conservé sur la machine hôte dans `./logs/`.
 |---------|-------------------|------|
 | `POST`  | `/api/ask`        | Pose une question `{ "question": "…" }` → réponse + sources |
 | `GET`   | `/api/health`     | État du serveur (configuration, fournisseur, modèle, nombre de sources) |
+| `POST`  | `/api/track`      | Événement d'interface pour le journal (`clic_source`) |
 | `GET`   | `/api/llm-status` | Disponibilité réelle de l'API Databricks (appel de test d'1 jeton, résultat gardé 30 s) : `etat` = `disponible` / `indisponible` / `timeout` / `non_configure` |
 
 ## Journal d'audit
 
 Chaque événement est ajouté en une ligne JSON dans `logs/journal.log`
-(dossier exclu de Git) : actions des utilisateurs (identifiés par IP + cookie de
-session `faq_uid`), connexions à Elasticsearch et Databricks (état, statut HTTP,
-durée), modifications du code détectées au démarrage, démarrages du serveur.
-Consultation : `tail -f logs/journal.log`.
+(dossier exclu de Git, partagé avec le conteneur Docker) :
+
+| `type` | Contenu |
+|---|---|
+| `action_utilisateur` | Qui (IP + cookie de session `faq_uid`) a fait quoi : `visite_page`, `question` (texte, `origine` suggestion/saisie, trouvé, note, sources, durée), `clic_source`, `consultation_etat`, `consultation_etat_llm`, `requete_invalide`, `methode_refusee`, `page_introuvable`, `acces_refuse` |
+| `connexion_interface` | Chaque appel à Elasticsearch ou Databricks : état (`ok` / `erreur` / `timeout`), statut HTTP, durée |
+| `modification_code` | Fichiers modifiés / ajoutés / supprimés depuis le démarrage précédent, avec le dernier commit Git (inscrit dans l'image au build en Docker) |
+| `demarrage_serveur` | Chaque démarrage, avec l'`environnement` (`local` ou `docker`) |
+
+Une action et les connexions qu'elle déclenche partagent le même numéro
+`requete`. Le healthcheck Docker (en-tête `X-Healthcheck: docker`) n'est pas
+journalisé. `LOG_DIR` permet d'écrire le journal ailleurs (utilisé par les tests).
+
+```bash
+tail -f logs/journal.log                                   # en direct
+jq -c 'select(.action=="question")' logs/journal.log       # questions posées
+jq -c 'select(.requete=="<numero>")' logs/journal.log      # une action et ses connexions
+```
 
 ## Conformité à la charte graphique ESSEC
 

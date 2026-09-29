@@ -1,6 +1,11 @@
 services:
   faq:
-    build: .
+    build:
+      context: .
+      # Donne acces au .git pendant le build : le commit courant est inscrit
+      # dans l'image pour le journal d'audit (modifications du code).
+      additional_contexts:
+        gitdir: ./.git
     container_name: essec-faq
     ports:
       - "3000:3000"

@@ -203,10 +203,19 @@
 
     input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px'; });
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
-    sendBtn.addEventListener('click', submit);
+    sendBtn.addEventListener('click', () => submit());
     document.getElementById('suggestions').addEventListener('click', (e) => {
-      if (e.target.classList.contains('chip')) { input.value = e.target.textContent; submit(); }
+      if (e.target.classList.contains('chip')) { input.value = e.target.textContent; submit('suggestion'); }
     });
+
+    // Journal d'audit : signale au serveur les clics sur les articles sources
+    // (ils s'ouvrent dans un nouvel onglet, le serveur ne les voit pas passer).
+    function track(payload) {
+      const body = JSON.stringify(payload);
+      if (!(navigator.sendBeacon && navigator.sendBeacon('/api/track', body))) {
+        fetch('/api/track', { method: 'POST', body, keepalive: true }).catch(() => {});
+      }
+    }
 
     function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
     function scrollToBottom() { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); }
@@ -236,7 +245,7 @@
       return html;
     }
 
-    async function submit() {
+    async function submit(origine = 'saisie') {
       const question = input.value.trim();
       if (!question) return;
       welcome.style.display = 'none';
@@ -253,7 +262,7 @@
       scrollToBottom();
 
       try {
-        const res = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question }) });
+        const res = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, origine }) });
         const data = await res.json();
         loading.remove();
         if (!res.ok) renderError(data.error || 'Une erreur est survenue.');
@@ -294,7 +303,10 @@
           const cats = (s.categories || []).map((c) => `<span class="cat">${escapeHtml(c)}</span>`).join('');
           const el = document.createElement(s.url ? 'a' : 'div');
           el.className = 'source';
-          if (s.url) { el.href = s.url; el.target = '_blank'; el.rel = 'noopener noreferrer'; }
+          if (s.url) {
+            el.href = s.url; el.target = '_blank'; el.rel = 'noopener noreferrer';
+            el.addEventListener('click', () => track({ event: 'clic_source', url: s.url, title: s.title, question: data.question }));
+          }
           el.innerHTML = `
             <div class="source-top">
               <span class="source-title">${escapeHtml(s.title)}</span>
