@@ -11,9 +11,11 @@ services:
       ELK_INSECURE: ${ELK_INSECURE:-false}
       CANDIDATES: ${CANDIDATES:-10}
       MAX_SOURCES: ${MAX_SOURCES:-3}
-      # RAG Claude (facultatif : si vide, bascule sur la synthese sans IA)
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-3-5-haiku-latest}
+      # RAG Databricks (facultatif : si URL ou token vide, bascule sur la synthese sans IA)
+      DATABRICKS_URL: ${DATABRICKS_URL:-}
+      DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-}
+      SCORE_MIN: ${SCORE_MIN:-3}
+      SYNTH_MIN_COVERAGE: ${SYNTH_MIN_COVERAGE:-0.5}
       RAG_ENABLED: ${RAG_ENABLED:-true}
       PORT: 3000
     volumes:

@@ -40,16 +40,19 @@ plutôt que d'inventer.
 (Claude Sonnet 4.5) et ne propose **ni Gemini ni Anthropic**.
 
 > Rattachement — votre demande : « je veux garder que databricks et supprime le
-> reste ».
+> reste ». — ✔️ **Réalisé** : Gemini et Anthropic retirés de `server.js`.
 
 ### D2. Bouton indiquant la disponibilité de l'API Databricks
 
 **Étant donné** un utilisateur devant l'interface,
 **quand** la page est affichée,
-**alors** un **bouton** indique si l'API Databricks est disponible.
+**alors** un **bouton** indique si l'API Databricks est disponible (vert =
+disponible, rouge = indisponible ou ne répond pas, gris = non configurée) ;
+**quand** l'utilisateur clique dessus, **alors** la vérification est relancée.
 
 > Rattachement — votre demande : « affiche moi un bouton qui affiche si le api
-> databricks et dispo ».
+> databricks et dispo ». — ✔️ **Réalisé** : bouton dans l'en-tête, relié à
+> `/api/llm-status` (vrai appel de test d'1 jeton, résultat gardé 30 s).
 
 ### D3. Nombre d'articles affichés limité (moins, voire 0 si rien de pertinent)
 
@@ -247,10 +250,8 @@ pour éviter les malentendus ; certains sont évoqués comme pistes futures dans
   clés (Elasticsearch, Databricks) fonctionnent.
 - **Structure réelle de l'index FAQ** : les champs `title`, `content`, `url` et
   `faq_category` sont déduits du code, pas vérifiés contre la vraie base.
-- **Noms de modèles d'IA** : `gemini-3.5-flash` et `claude-sonnet-5` n'ont pas pu
-  être vérifiés comme des identifiants réellement existants.
-- **Écart entre vos demandes et le code** : D1 (Databricks unique) et D2 (bouton
-  de disponibilité) ne sont pas encore présents dans le code actuel.
+- **Écart entre vos demandes et le code** : résorbé — D1 et D2 sont réalisés
+  (testés avec de faux services ; à valider sur le vrai endpoint Databricks).
 - **Votre cahier des charges initial** : non disponible ; le partage Catégorie 1
   / Catégorie 2 se fonde uniquement sur vos messages de cette conversation.
 
@@ -260,8 +261,8 @@ pour éviter les malentendus ; certains sont évoqués comme pistes futures dans
 
 | Spécification | Catégorie | Type | Priorité estimée | Justification |
 |---|---|---|---|---|
-| Fournisseur d'IA unique : Databricks (D1) | Demande utilisateur | Technique | Haute | Demandé (« garder que Databricks ») ; actuellement en écart : Gemini/Anthropic encore présents. |
-| Bouton de disponibilité de l'API Databricks (D2) | Demande utilisateur | UX | Moyenne | Demandé ; absent du code (visible seulement via `/api/health`). |
+| Fournisseur d'IA unique : Databricks (D1) | Demande utilisateur | Technique | Haute | Demandé (« garder que Databricks ») ; réalisé : Gemini/Anthropic retirés. |
+| Bouton de disponibilité de l'API Databricks (D2) | Demande utilisateur | UX | Moyenne | Demandé ; réalisé : bouton relié à `/api/llm-status`. |
 | Max 3 articles affichés, 0 si rien (D3) | Demande utilisateur | Fonctionnel | Haute | Demandé (`MAX_SOURCES=3`) ; présent et conforme. |
 | Note minimale du LLM = 3 (D4) | Demande utilisateur | Fonctionnel | Haute | Demandé (`SCORE_MIN=3`) ; garde-fou de qualité, présent. |
 | Endpoint Databricks + repli sans IA (D5) | Demande utilisateur | Architecture | Critique | Demandé ; cœur de la génération de réponse ; présent. |
@@ -281,7 +282,7 @@ pour éviter les malentendus ; certains sont évoqués comme pistes futures dans
 | Identité visuelle ESSEC (R14) | Recommandation IA | UX | Moyenne | Cohérence de marque ; déduit du code. |
 | Zéro dépendance (Node natif) (R15) | Recommandation IA | Architecture | Moyenne | Déploiement simplifié ; choix du code. |
 | Délais d'attente maîtrisés (R16) | Recommandation IA | Technique | Moyenne | Évite les blocages ; déduit du code. |
-| Aligner README/docker-compose/.env (R17) | Recommandation IA | Bonnes pratiques | Haute | Docker ne transmet pas Databricks → risque de mauvaise config. |
+| Aligner README/docker-compose/.env (R17) | Recommandation IA | Bonnes pratiques | Haute | Réalisé : README, docker-compose et .env.example alignés sur Databricks. |
 | Uniformiser / vérifier les modèles (R18) | Recommandation IA | Technique | Moyenne | Valeurs par défaut incohérentes ; noms à valider. |
 | Test du parcours Anthropic (R19) | Recommandation IA | Technique | Basse | Couverture de test manquante. |
 | Régénérer / restreindre la clé Elasticsearch (R20) | Recommandation IA | Sécurité | Haute | Bonne pratique avant production (source README). |

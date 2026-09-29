@@ -23,8 +23,13 @@
   accents et symboles, retrait de la mention « Last update ».
 - **Réponse rédigée par IA (RAG)** : l'IA rédige à partir des seuls extraits
   fournis, choisit les articles à citer et s'auto-évalue.
-- **Trois fournisseurs d'IA pris en charge**, avec choix automatique par ordre de
-  priorité : Databricks (interne ESSEC) → Gemini → Anthropic.
+- **Fournisseur d'IA unique : Databricks** (endpoint interne ESSEC, Claude
+  Sonnet 4.5) — Gemini et Anthropic retirés du code (demande D1).
+- **Bouton de disponibilité de l'API Databricks** dans l'en-tête (vert /
+  rouge / gris), relié à `/api/llm-status` qui fait un vrai appel de test
+  d'1 jeton, gardé en cache 30 s (demande D2).
+- **Journal d'audit** (`logs/journal.log`) : actions des utilisateurs,
+  connexions aux interfaces externes, modifications du code, démarrages.
 - **Garde-fous de fiabilité** : réponse écartée si l'auto-note est < 3, si aucune
   source n'est citée, ou en cas de panne de l'IA (jamais de réponse inventée).
 - **Mode sans IA (repli)** : synthèse à partir du meilleur article, avec un
@@ -41,19 +46,19 @@
 - **Sécurité des clés** : toutes les clés restent côté serveur ; le fichier
   `.env` est exclu de Git.
 - **Banc d'essai automatisé** (`test-rag.mjs`) : valide la chaîne complète avec
-  de faux services (Elasticsearch, Gemini, Databricks) et des questions pièges.
-- **Empaquetage Docker** : `Dockerfile` + `docker-compose.yml` + vérification de
-  santé intégrée.
+  de faux services (Elasticsearch, Databricks) et des questions pièges, y
+  compris les trois états du bouton de disponibilité.
+- **Empaquetage Docker** : `Dockerfile` + `docker-compose.yml` (transmet
+  `DATABRICKS_URL` / `DATABRICKS_TOKEN`) + vérification de santé intégrée +
+  journal persisté dans `./logs`.
 - **Zéro dépendance externe** : fonctionne avec Node.js seul (≥ 18).
 
 ## 🟡 En cours / partiel
 
 *(État factuel : la brique existe mais n'est pas complètement aboutie.)*
 
-- **Migration vers Databricks comme fournisseur principal** : le code donne bien
-  la priorité à Databricks et le fichier d'exemple `.env.example` est centré sur
-  Databricks. La brique fonctionne en local ; l'alignement de la documentation et
-  du déploiement Docker n'est pas terminé (détails plus bas).
+- **Validation sur les vrais accès** : la chaîne Databricks est testée avec de
+  faux services ; reste à la valider avec le vrai endpoint et un vrai token.
 
 ## 🔴 À venir
 
@@ -61,10 +66,9 @@
 recommandation de ma part.)*
 
 ### Fonctionnalités et améliorations
-- **Bouton « statut de l'API » dans l'interface** *(source : demandé lors
-  d'essais antérieurs, absent de ce code)* : afficher sur la page si l'IA
-  (Databricks) est disponible, au lieu de passer par l'adresse technique
-  `/api/health`.
+- **Page d'administration du journal d'audit** *(source : recommandation
+  Claude)* : consulter `logs/journal.log` depuis l'interface — nécessite d'abord
+  une protection d'accès (le journal contient des adresses IP).
 - **Authentification / SSO ESSEC** *(source : projet, `README.md`)* : réserver
   l'accès aux étudiants.
 - **Historique de conversation** *(source : projet, `README.md`)* : permettre des
@@ -94,16 +98,14 @@ recommandation de ma part.)*
 > factuel dans l'encadré équivalent de `ARCHITECTURE.md`). À prendre ou à
 > laisser ; aucune ne touche au moteur de l'application.*
 >
-> - **Mettre à jour `README.md`** pour refléter les trois fournisseurs, l'ordre
->   de priorité et les réglages `SCORE_MIN` / `SYNTH_MIN_COVERAGE`.
-> - **Compléter `docker-compose.yml`** pour transmettre aussi `DATABRICKS_URL`,
->   `DATABRICKS_TOKEN` (et éventuellement `GEMINI_*`), afin que le déploiement
->   Docker utilise réellement Databricks.
-> - **Uniformiser le modèle Anthropic par défaut** (`claude-sonnet-5` dans le
->   code vs `claude-3-5-haiku-latest` dans Docker) et **vérifier les noms de
->   modèles** (`gemini-3.5-flash`, `claude-sonnet-5`) auprès des fournisseurs.
-> - **Compléter le banc d'essai** avec un test du parcours Anthropic (aujourd'hui
->   seuls Gemini, Databricks et le mode sans IA sont testés).
+> - ✔️ *Fait* — **`README.md`** mis à jour (Databricks seul, `SCORE_MIN`,
+>   `SYNTH_MIN_COVERAGE`, `/api/llm-status`, journal d'audit).
+> - ✔️ *Fait* — **`docker-compose.yml`** transmet `DATABRICKS_URL`,
+>   `DATABRICKS_TOKEN`, `SCORE_MIN` et `SYNTH_MIN_COVERAGE`.
+> - *Sans objet* — modèle Anthropic par défaut et test du parcours Anthropic :
+>   Anthropic et Gemini ont été retirés (D1).
+> - **Définir une durée de conservation** du journal d'audit (IP + questions
+>   posées : données personnelles au sens du RGPD).
 
 ---
 

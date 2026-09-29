@@ -52,9 +52,9 @@ HTML/CSS/JS (charte ESSEC, Roboto), Docker + Docker Compose, tests avec Playwrig
 ## Demandes fonctionnelles exprimées par l'utilisateur (specs « Catégorie 1 »)
 
 - **D1** — Fournisseur d'IA **unique : Databricks** (retirer Gemini et Anthropic).
-  → ⚠️ **Pas encore fait dans le code** (les trois fournisseurs sont toujours là).
+  → ✔️ **Réalisé le 29/09/2026** (voir mise à jour en fin de fichier).
 - **D2** — **Bouton** affichant la disponibilité de l'API Databricks.
-  → ⚠️ **Pas encore fait dans le code** (visible seulement via `/api/health`).
+  → ✔️ **Réalisé le 29/09/2026** (`/api/llm-status` + bouton dans l'en-tête).
 - **D3** — Maximum **3 articles** affichés, 0 si rien de pertinent (`MAX_SOURCES=3`).
   → ✔️ présent.
 - **D4** — Note minimale **3** que le LLM doit s'attribuer (`SCORE_MIN=3`).
@@ -115,3 +115,21 @@ contenu factuel.
 - Homogénéiser `ARCHITECTURE` et `tasks` sur le style « scénarios » du spec.
 - Pousser les documents (et d'éventuelles corrections) sur GitHub — via le
   navigateur, faute de connecteur GitHub (pushes non effectués à ce jour).
+
+## Mise à jour du 29/09/2026 — D1, D2 et alignement réalisés
+
+- Les 3 commits (documentation, journal d'audit, correctif Docker) ont été
+  **poussés** sur `origin/main` (clé SSH `~/Documents/cle ssh /oussalouh`,
+  chargée dans le trousseau macOS).
+- **D1 réalisé** : Gemini et Anthropic retirés de `server.js` ; Databricks est
+  le seul fournisseur, avec repli sur la synthèse sans IA.
+- **D2 réalisé** : bouton dans l'en-tête de `public/index.html`, relié au nouvel
+  endpoint `GET /api/llm-status` (vrai appel Databricks d'1 jeton, délai 8 s,
+  résultat gardé 30 s, journalisé ; le token n'est jamais renvoyé).
+- **R17 réalisé** : `docker-compose.yml` transmet `DATABRICKS_URL`,
+  `DATABRICKS_TOKEN`, `SCORE_MIN`, `SYNTH_MIN_COVERAGE` ; `README.md` réécrit.
+- **Tests** : `test-rag.mjs` réécrit sur le faux Databricks (18 vérifications,
+  toutes au vert) ; Playwright devient facultatif (absent sur le Mac).
+- Les `.docx` n'ont **pas** été régénérés (choix de l'utilisateur).
+- Reste ouvert : page d'administration du journal (nécessite une protection
+  d'accès), validation sur le vrai endpoint Databricks.
